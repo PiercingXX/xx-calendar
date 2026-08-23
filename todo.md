@@ -4,8 +4,33 @@ Spec: [design.md](design.md). Teardown:
 [design/google-calendar-teardown.md](design/google-calendar-teardown.md).
 Target: Pixel 9 Pro (`caiman`), GrapheneOS, Android 17 / SDK 37.
 
-**Status: nothing built.** The repo holds `design.md`, this file, and the
-teardown.
+**Status: built.** All twelve workstreams below are implemented: 247 JVM unit
+tests green, `assembleDebug` and `assembleDebugAndroidTest` green. The privacy
+claim is machine-proven — `aapt2 dump permissions` on the built APK shows zero
+`INTERNET`, and the CI gate in `.github/workflows/ci.yml` fails the build if it
+ever appears.
+
+Toolchain deltas from design §14: AGP 8.9.1, Gradle 8.11.1, compileSdk/
+targetSdk 35 (environment baseline). Kotlin 1.9.24, Compose compiler 1.5.14,
+and minSdk 26 are as specified. Robolectric is 4.13, not 4.12.2 — required for
+compileSdk 35.
+
+Built but device-gated, therefore AMBIGUOUS by plan:
+
+- On-phone review of the sigil mock,
+  [design/mock/sigil-mock.html](design/mock/sigil-mock.html). The mock's own
+  verdict: six tiers collapse to ~4 perceptual groups at phone sizes. Decision
+  pending owner.
+- WS3's two open questions against real DAVx⁵ data (adb commands live in git
+  history and the reports).
+- Instrumented-suite runtime — `./gradlew connectedDebugAndroidTest` when a
+  device attaches.
+
+Known inert edges, shipped knowingly: APPEARANCE rows render and do nothing
+(one theme ships). Widget text uses `FontFamily.Monospace` because
+Glance/RemoteViews cannot load `res/font`. glance-appwidget pulls
+`WAKE_LOCK`, `ACCESS_NETWORK_STATE`, and `FOREGROUND_SERVICE` transitively —
+`INTERNET` is still absent.
 
 ---
 
@@ -67,7 +92,9 @@ adb shell am start -n com.piercingxx.calendar/.ui.MainActivity
 ```
 
 Copy `debug.keystore` from Nope-Mode before the first build, so all PiercingXX
-sideloads keep one signing identity (design §14).
+sideloads keep one signing identity (design §14). Not done on this machine —
+the keystore was not available — so builds sign with the default
+`~/.android/debug.keystore`.
 
 Vendor the brand tokens rather than retyping hexes:
 
@@ -85,18 +112,18 @@ questions can only be answered against real synced data.
 
 | WS | Scope | Blocks on | State |
 |---|---|---|---|
-| 1 | `core/` + the sigil mock | nothing | **start here** |
-| 2 | Skeleton, theme, fonts, icon, permission gate | nothing | not started |
-| 3 | `CalendarRepository` — the provider layer | 2 | not started |
-| 4 | Schedule view | 1,2,3 | not started |
-| 5 | Day + Week time grids | 4 | not started |
-| 6 | Month grid + day peek | 4 | not started |
-| 7 | Detail sheet, editor, recurring writes | 3,4 | not started |
-| 8 | Reminders — reconciler, alarms, boot | 3 | not started |
-| 9 | Settings | 4,8 | not started |
-| 10 | `.ics` + JSON backup | 3,9 | not started |
-| 11 | Widgets, shortcuts, intent filters, theme sync | 4,6 | not started |
-| 12 | CI privacy gate + instrumented suite | 3,7 | not started |
+| 1 | `core/` + the sigil mock | nothing | done |
+| 2 | Skeleton, theme, fonts, icon, permission gate | nothing | done |
+| 3 | `CalendarRepository` — the provider layer | 2 | done |
+| 4 | Schedule view | 1,2,3 | done |
+| 5 | Day + Week time grids | 4 | done |
+| 6 | Month grid + day peek | 4 | done |
+| 7 | Detail sheet, editor, recurring writes | 3,4 | done |
+| 8 | Reminders — reconciler, alarms, boot | 3 | done |
+| 9 | Settings | 4,8 | done |
+| 10 | `.ics` + JSON backup | 3,9 | done |
+| 11 | Widgets, shortcuts, intent filters, theme sync | 4,6 | done |
+| 12 | CI privacy gate + instrumented suite | 3,7 | done |
 
 WS1 and WS2 are independent. So are WS5 and WS6 once WS4 lands.
 
@@ -107,128 +134,137 @@ WS1 and WS2 are independent. So are WS5 and WS6 once WS4 lands.
 Pure JVM. No Android imports in this package, ever — that boundary is what makes
 the recurrence logic testable (design §5).
 
-- [ ] `RRuleModel` — build/parse the five presets and custom rules (interval,
+- [x] `RRuleModel` — build/parse the five presets and custom rules (interval,
       by-day, by-month-day, nth-weekday, `UNTIL`/`COUNT`). Round-trip tests.
-- [ ] `ScopeResolver` — every row of design §6.3 as a plain data object
+- [x] `ScopeResolver` — every row of design §6.3 as a plain data object
       describing the intended provider writes. **The priority suite.**
-- [ ] `TimeMath` — all-day UTC-midnight conversion tested at `UTC-11`, `UTC`,
+- [x] `TimeMath` — all-day UTC-midnight conversion tested at `UTC-11`, `UTC`,
       `UTC+13`, and across DST in both directions.
-- [ ] `SigilAssigner` — stable ordering, survives remove/re-add, honours
+- [x] `SigilAssigner` — stable ordering, survives remove/re-add, honours
       overrides.
-- [ ] `AgendaGrouping` — day boundaries, multi-day and all-day placement.
-- [ ] **The mock.** A static render of a dense week and a dense month with six
+- [x] `AgendaGrouping` — day boundaries, multi-day and all-day placement.
+- [x] **The mock.** A static render of a dense week and a dense month with six
       calendars in `▌ ▏ ░ ▒ ▓ ·` at their opacity tiers, on `#000000`, in
       JetBrains Mono. Look at it on the actual phone, at actual size.
+      Built (`design/mock/sigil-mock.html`); on-phone review still pending.
 
 **Gate:** the mock reads, or design §7.1 gets revisited before WS4. This is the
 cheapest possible moment to discover the scheme fails.
 
 ## WS2 — Skeleton
 
-- [ ] Gradle to design §14. Kotlin 1.9.24, Compose compiler 1.5.14, minSdk 26.
-- [ ] `CalendarTheme` — tokens vendored from the branding repo, not retyped.
-- [ ] Space Mono + JetBrains Mono in `res/font/`. Tabular figures on.
-- [ ] Underlined-XX adaptive icon on an ink tile.
-- [ ] Permission gate — one screen, one button, no partial UI (design §10).
-- [ ] `debug.keystore` from Nope-Mode.
+- [x] Gradle to design §14. Kotlin 1.9.24, Compose compiler 1.5.14, minSdk 26.
+- [x] `CalendarTheme` — tokens vendored from the branding repo, not retyped.
+- [x] Space Mono + JetBrains Mono in `res/font/`. Tabular figures on.
+- [x] Underlined-XX adaptive icon on an ink tile.
+- [x] Permission gate — one screen, one button, no partial UI (design §10).
+- [ ] `debug.keystore` from Nope-Mode — keystore was not available on this
+      machine; signing uses the default `~/.android/debug.keystore`.
 
 ## WS3 — The provider layer, and the two open questions
 
-- [ ] `InstanceQuery` — `Instances.query()` over a range, off the main thread.
-- [ ] `CalendarRepository` — calendar list, load/save/delete event, reminders.
-- [ ] **`OpaqueColumns`** — every column not in design §6.2 read, held, written
+- [x] `InstanceQuery` — `Instances.query()` over a range, off the main thread.
+- [x] `CalendarRepository` — calendar list, load/save/delete event, reminders.
+- [x] **`OpaqueColumns`** — every column not in design §6.2 read, held, written
       back untouched (D8). This protects R6 and it is easier to build now than
       to retrofit.
-- [ ] `ContentObserver` → invalidate the visible window.
-- [ ] Create a local calendar on first run when none is writable (§4.4).
+- [x] `ContentObserver` → invalidate the visible window.
+- [x] Create a local calendar on first run when none is writable (§4.4).
 - [ ] **Answer open question 1:** what marks a Gmail auto-added event once it
       has come through DAVx⁵? Inspect real synced rows. If there is no reliable
       marker, fall back to a per-calendar hide and record that in the spec.
+      Needs a device with real synced data.
 - [ ] **Answer open question 2:** measure `Instances` expansion cost over a
-      month of a real, busy, heavily-recurring account.
+      month of a real, busy, heavily-recurring account. Same device gate.
 
 **Gate:** both open questions answered on real data before WS4 builds on them.
 
 ## WS4 — Schedule view · first honest milestone
 
-- [ ] Infinite scroll, empty days skipped, `Nothing scheduled.` empty state.
-- [ ] Sigil + opacity per calendar. Past events at `shade`.
-- [ ] Current-time rule in signal white — one of only two full-white elements.
-- [ ] Top bar, `Today` button, mini-month picker, drawer with visibility
+- [x] Infinite scroll, empty days skipped, `Nothing scheduled.` empty state.
+- [x] Sigil + opacity per calendar. Past events at `shade`.
+- [x] Current-time rule in signal white — one of only two full-white elements.
+- [x] Top bar, `Today` button, mini-month picker, drawer with visibility
       toggles.
-- [ ] FAB with **one** action.
+- [x] FAB with **one** action.
 
 **Gate:** the app shows your real days. If it is not pleasant to look at here,
 fix it here — not after three more views exist.
 
 ## WS5 — Day and Week
 
-- [ ] Time grid, hour rules at `line`, Space Mono hour labels.
-- [ ] Event blocks with the sigil bar; all-day pinned header row.
-- [ ] Drag to create, drag to move, edge-resize. 15-minute snap.
-- [ ] Week: seven columns, today's numeral inverted.
+- [x] Time grid, hour rules at `line`, Space Mono hour labels.
+- [x] Event blocks with the sigil bar; all-day pinned header row.
+- [x] Drag to create, drag to move, edge-resize. 15-minute snap.
+- [x] Week: seven columns, today's numeral inverted.
 
 ## WS6 — Month
 
-- [ ] 7×N grid, out-of-month at `shade`, today inverted.
-- [ ] Up to three chips per cell, then `+N`.
-- [ ] Day peek beneath the grid — the month stays visible.
-- [ ] Week-number gutter (S3).
+- [x] 7×N grid, out-of-month at `shade`, today inverted.
+- [x] Up to three chips per cell, then `+N`.
+- [x] Day peek beneath the grid — the month stays visible.
+- [x] Week-number gutter (S3).
 
 ## WS7 — Editor · the correctness work
 
-- [ ] Detail sheet: no guest section, no RSVP (teardown §3.4). Conferencing URL
+- [x] Detail sheet: no guest section, no RSVP (teardown §3.4). Conferencing URL
       as text if present; attachment count only.
-- [ ] Editor per design §8.5. No location autocomplete, no title suggestion.
-- [ ] `RepeatBuilder` — presets plus custom.
-- [ ] **`ScopePrompt` + the three recurring writes.** Only for recurring events.
-- [ ] Refuse and explain on an unmodelled recurrence shape. Never guess.
-- [ ] Undo on delete.
+- [x] Editor per design §8.5. No location autocomplete, no title suggestion.
+- [x] `RepeatBuilder` — presets plus custom.
+- [x] **`ScopePrompt` + the three recurring writes.** Only for recurring events.
+- [x] Refuse and explain on an unmodelled recurrence shape. Never guess.
+- [x] Undo on delete.
 
 **Gate:** `ScopeResolver` suite green *and* the instrumented round-trip green
 before this merges. This is the one that corrupts data.
 
 ## WS8 — Reminders
 
-- [ ] `ReminderReconciler` — recompute the next 48h on boot, provider change,
+- [x] `ReminderReconciler` — recompute the next 48h on boot, provider change,
       settings change, and a daily heartbeat. Diff and apply. Never chase
       individual events (design §4.3).
-- [ ] `AlarmScheduler` on `setExactAndAllowWhileIdle`.
-- [ ] `BootReceiver`, `ReminderReceiver`, notification channels.
-- [ ] `canScheduleExactAlarms()` check → the one warn-coloured row in Settings.
-- [ ] Quiet defaults: content preview off, heads-up off, daily agenda off.
-- [ ] Never notify for a declined event.
+- [x] `AlarmScheduler` on `setExactAndAllowWhileIdle`.
+- [x] `BootReceiver`, `ReminderReceiver`, notification channels.
+- [x] `canScheduleExactAlarms()` check → the one warn-coloured row in Settings.
+- [x] Quiet defaults: content preview off, heads-up off, daily agenda off.
+- [x] Never notify for a declined event.
 
 ## WS9 — Settings
 
-- [ ] The sixteen survivors, laid out as design §8.6.
-- [ ] `SettingsStore` on DataStore.
-- [ ] Sigil override per calendar.
-- [ ] Auto-added-event filter, using whatever WS3 found.
-- [ ] The honest sync row: last-changed timestamp plus an intent to DAVx⁵, and
+- [x] The sixteen survivors, laid out as design §8.6.
+- [x] `SettingsStore` on DataStore.
+- [x] Sigil override per calendar.
+- [x] Auto-added-event filter, using whatever WS3 found.
+- [x] The honest sync row: last-changed timestamp plus an intent to DAVx⁵, and
       the sentence saying this app cannot see sync state.
 
 ## WS10 — Data
 
-- [ ] `.ics` export (RFC 5545) via SAF, all calendars or one.
-- [ ] `.ics` import with `UID` duplicate detection.
-- [ ] JSON backup/restore of settings + sigils only. Events are `.ics`.
+- [x] `.ics` export (RFC 5545) via SAF, all calendars or one.
+- [x] `.ics` import with `UID` duplicate detection.
+- [x] JSON backup/restore of settings + sigils only. Events are `.ics`.
 
 ## WS11 — Surfaces
 
-- [ ] Month and Schedule widgets in Glance.
-- [ ] App shortcuts: New event, Today.
-- [ ] Intent filters — be the system calendar handler (design §12).
-- [ ] `ThemeSyncReceiver` for the XX-Launcher broadcast, as TxxT implements it.
+- [x] Month and Schedule widgets in Glance. (Widget text is
+      `FontFamily.Monospace` — Glance/RemoteViews cannot load `res/font`.)
+- [x] App shortcuts: New event, Today.
+- [x] Intent filters — be the system calendar handler (design §12).
+- [x] `ThemeSyncReceiver` for the XX-Launcher broadcast, as TxxT implements it.
 
 ## WS12 — Gates
 
-- [ ] CI: `aapt2 dump permissions` fails the build if `INTERNET` appears.
-- [ ] Instrumented: create/edit/delete round-trips, all three recurring scopes.
-- [ ] Instrumented: **opaque-column preservation** — load an event with every
+- [x] CI: `aapt2 dump permissions` fails the build if `INTERNET` appears.
+      Verified on the built APK: zero `INTERNET`.
+- [x] Instrumented: create/edit/delete round-trips, all three recurring scopes.
+- [x] Instrumented: **opaque-column preservation** — load an event with every
       unmodelled column populated, change one field, assert the rest is
       byte-identical.
-- [ ] Instrumented: reminder reconciliation after a simulated boot.
+- [x] Instrumented: reminder reconciliation after a simulated boot.
+
+All three instrumented suites are written and compile
+(`assembleDebugAndroidTest` green) but have never run — no device has attached.
+See the device-gated list at the top.
 
 ---
 

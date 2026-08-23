@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark-only AMOLED ground (design §7): ink everywhere, no light mode. -->
+    <style name="Theme.XxCalendar" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/pxx_ink</item>
+        <item name="android:colorBackground">@color/pxx_ink</item>
+        <item name="android:statusBarColor">@color/pxx_ink</item>
+        <item name="android:navigationBarColor">@color/pxx_ink</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

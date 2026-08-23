@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<!--
+  xx-calendar · design/mock/sigil-mock.html
+  Tests design.md §7.1 / open question 3: do SIX monospace sigils at white-opacity
+  tiers read in dense grids?
+
+  METHOD: JetBrains Mono on pure #000000, boards sized for review at ~412 CSS px
+  (phone-actual). Sigils exercised at 15 / 13 / 11 px in isolation, as a dense
+  repeat run, inside stacked week trios, and as 11px month chips.
+
+  HONEST VERDICT — six tiers DO NOT survive dense grids; they collapse to ~4
+  perceptual steps:
+    ▌ vs ▏  holds only ≥15px and only side-by-side. At 13px the quarter-block is
+            a ~2px sliver; antialiasing on black smears it into the half-block's
+            stem and a scanning eye calls both "the bright bar". Collapsed <15px.
+    ░ vs ▒  ARITHMETIC COLLAPSE: ░ is ~25%-ink at 50% alpha, ▒ is ~50%-ink at 25%
+            alpha — identical ~12% average luminance. Same gray fuzz ≤13px;
+            separable only side-by-side at 15px.
+    ▓       survives alone (75%-ink at 50% ≈ 3× the contrast of ░/▒).
+    ░ vs ▓  share the #80 stop, so only dither density carries them — merged into
+            one texture by 11px month chips.
+    ·       unique shape never confuses, but at 25% white on AMOLED black it
+            VANISHES below ~12px rather than reading as a tier.
+  Net: ▌ / ▓ distinct; ░≈▒ merged; ▏ unreliable; · faint. Six nominal tiers ≈ four
+  perceptual steps. Ship four tiers or add a second channel. Full note under legend.
+
+  NOTE: stops written alpha-first per guide convention (#E6FFFFFF = white @90%);
+  normalized to CSS RRGGBBAA (#FFFFFFE6). Block elements may fall back to a system
+  mono where the webfont lacks U+2580–259F; metrics shift accordingly.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xx-calendar · §7.1 sigil-tier legibility mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --t1:#FFFFFFE6; --t2:#FFFFFFCC; --t3:#FFFFFF80; --t4:#FFFFFF40;
+    --ink:#FFFFFF; --line:rgba(255,255,255,.1);
+    --page:#0A0A0A; --board:#000000; --rowh:36px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;border-radius:0}
+  body{
+    background:var(--page); color:var(--t2);
+    font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+    font-size:12px; line-height:1.45; padding:20px 12px 40px;
+  }
+  header.mast{max-width:852px;margin:0 auto 18px}
+  .mast h1{font-size:14px;font-weight:500;color:var(--t1);letter-spacing:.04em}
+  .mast p{font-size:11px;color:var(--t3);margin-top:2px}
+
+  .legend{max-width:852px;margin:0 auto;border:1px solid var(--line);background:var(--board);padding:10px 12px 12px}
+  .legend .lt{font-size:10px;letter-spacing:.14em;color:var(--t4);margin-bottom:8px}
+  ul.map{list-style:none;display:flex;flex-wrap:wrap;gap:6px 18px}
+  ul.map li{display:flex;align-items:center;gap:7px;font-size:11px}
+  ul.map .sg{width:1.2em;text-align:center;font-weight:500}
+  ul.map .nm{color:var(--t1)}
+  ul.map .tier{color:var(--t4)}
+  ul.map .sw{width:11px;height:11px;display:inline-block}
+  ul.map code{color:var(--t3);font-size:10px}
+  .probe{margin-top:10px;border-top:1px solid var(--line);padding-top:8px;font-size:11px;color:var(--t4)}
+  .probe div{margin:3px 0;white-space:nowrap;overflow:hidden}
+  .probe i{font-style:normal;letter-spacing:.1em;margin-right:8px}
+  .footnote{margin-top:10px;border-top:1px solid var(--line);padding-top:8px;font-size:10.5px;line-height:1.6;color:var(--t3)}
+  .footnote b{color:var(--t1);font-weight:500}
+
+  .boards{max-width:852px;margin:16px auto 0;display:flex;gap:16px;justify-content:center;align-items:flex-start}
+  .caption{max-width:852px;margin:10px auto 0;text-align:center;font-size:10px;letter-spacing:.08em;color:var(--t4)}
+
+  .board{background:var(--board);border:1px solid var(--line);width:412px;flex:0 0 412px}
+  .bhead{display:flex;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--line)}
+  .bhead h2{font-size:11px;font-weight:500;letter-spacing:.12em;color:var(--t1)}
+  .bhead span{font-size:10px;color:var(--t4)}
+  .gut{flex:0 0 42px;width:42px}
+
+  .dayhead{display:flex;border-bottom:1px solid var(--line)}
+  .dayhead .dh{flex:1;text-align:center;padding:5px 0 6px}
+  .dh em{display:block;font-style:normal;font-size:9px;letter-spacing:.14em;color:var(--t4)}
+  .dh b{display:block;font-size:13px;font-weight:400;color:var(--t2);margin-top:1px}
+  .dh.tdy b{color:var(--t1);font-weight:700}
+
+  .allday{display:flex;border-bottom:1px solid var(--line);min-height:46px}
+  .allday .gut{font-size:8px;letter-spacing:.08em;color:var(--t4);text-align:right;padding:4px 6px 0 0}
+  .adlane{flex:1;position:relative}
+  .adc{position:absolute;top:4px;bottom:4px;display:flex;align-items:center;gap:3px;padding:0 4px;
+       background:rgba(255,255,255,.06);border:1px solid var(--line);overflow:hidden;white-space:nowrap}
+  .adc b{font-weight:500}
+  .adc .tt{font-size:10px;color:var(--t1);overflow:hidden;text-overflow:ellipsis}
+
+  .grid{display:flex;border-bottom:1px solid var(--line)}
+  .hours{position:relative;flex:0 0 42px}
+  .hours span{position:absolute;right:6px;font-size:10px;color:var(--t4);transform:translateY(-50%)}
+  .cols{flex:1;display:flex}
+  .daycol{flex:1;position:relative;border-left:1px solid var(--line);
+          background-image:repeating-linear-gradient(to bottom,var(--line) 0 1px,transparent 1px var(--rowh))}
+  .daycol.tdy{background-color:rgba(255,255,255,.03)}
+  .ev{position:absolute;background:#000;border:1px solid var(--line);overflow:hidden;padding:2px 3px;z-index:2}
+  .ev .row{display:block;white-space:nowrap;overflow:hidden}
+  .ev .sg{font-style:normal;font-size:14px;line-height:1;margin-right:2px}
+  .ev .tt{font-style:normal;font-size:12px;color:var(--t1)}
+  .ev .tm{display:block;font-size:10px;color:var(--t3);white-space:nowrap;overflow:hidden}
+  .ev.stk{padding:1px 2px;line-height:15px;white-space:nowrap}
+  .ev.stk .sg{font-size:13px}
+  .ev.stk .tt{font-size:11px}
+  .ev.stk .tm{display:inline;font-size:10px;margin-left:3px}
+  .ev.sel{background:var(--ink);border-color:var(--ink);z-index:8}
+  .ev.sel .sg,.ev.sel .tt,.ev.sel .tm{color:#000}
+  .now{position:absolute;left:-1px;right:-1px;height:0;border-top:1px solid var(--ink);z-index:9}
+  .now i{position:absolute;left:-4px;top:-4px;width:7px;height:7px;background:var(--ink);border-radius:50%}
+
+  .mwrap{padding:8px}
+  .mgrid{display:grid;grid-template-columns:26px repeat(7,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+  .mgrid>div{background:var(--board);min-width:0}
+  .mh{font-size:9px;letter-spacing:.08em;color:var(--t4);text-align:center;padding:4px 0}
+  .wk{font-size:9px;color:var(--t4);text-align:right;padding:3px 3px 0 0}
+  .mcell{min-height:88px;padding:3px 4px}
+  .dn{display:block;font-size:12px;color:var(--t2);margin-bottom:2px}
+  .mcell.out .dn{color:var(--t4)}
+  .chip{display:block;font-size:11px;line-height:1.55;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chip .sg{font-style:normal;font-size:11px;margin-right:1px}
+  .more{font-size:11px;color:var(--t3)}
+  .mcell.today{background:var(--ink)}
+  .mcell.today .dn,.mcell.today .chip,.mcell.today .chip .sg{color:#000}
+
+  @media (max-width:899px){
+    .boards{flex-direction:column;align-items:center}
+  }
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <h1>XX-CALENDAR — SIGIL SCHEME MOCK</h1>
+  <p>design.md §7.1 · open question 3: do six monospace sigils at white-opacity tiers read in dense grids?</p>
+</header>
+
+<section class="legend">
+  <div class="lt">LEGEND — SIGIL → CALENDAR → TIER → WHITE STOP</div>
+  <ul class="map" id="map"></ul>
+  <div class="probe">
+    <div><i>ISOLATED @ 15 / 13 / 11 PX</i><span class="ramp" data-sz="15"></span>&nbsp;&nbsp;<span class="ramp" data-sz="13"></span>&nbsp;&nbsp;<span class="ramp" data-sz="11"></span></div>
+    <div><i>DENSE REPEAT @ 13 PX&nbsp;&nbsp;&nbsp;</i><span class="ramp dense" data-sz="13" data-n="3"></span></div>
+  </div>
+  <div class="footnote">
+    <b>HONEST LEGIBILITY VERDICT.</b>
+    <b>▌vs▏</b> holds only ≥15px and only side-by-side — at 13px the quarter-block is a ~2px sliver that AA smears
+    into the half-block stem; in a 7-column scan both read as “the bright bar”. Collapsed &lt;15px.
+    <b>░vs▒</b> arithmetic collapse: 25%-ink×50%α vs 50%-ink×25%α = identical ~12% average luminance → same gray
+    fuzz ≤13px. <b>▓</b> survives alone (≈3× their contrast) but shares the #80 stop, so <b>░vs▓</b> rides on dither
+    density alone — merged by 11px chips. <b>·</b> never confuses (unique dot) but vanishes on black &lt;12px at 25%.
+    Net: <b>six nominal tiers ≈ four perceptual steps (▌ / ▓ / ░≈▒ / ·)</b>; six do not read at 13–15px in dense stacks.
+  </div>
+</section>
+
+<main class="boards">
+
+  <section class="board" id="week">
+    <div class="bhead"><h2>DENSE WEEK</h2><span>AUG 17–23 2026 · 7×14 · 35 EVENTS</span></div>
+    <div class="dayhead" id="dayhead"><span class="gut"></span></div>
+    <div class="allday"><span class="gut">ALL-DAY</span><div class="adlane" id="adlane"></div></div>
+    <div class="grid">
+      <div class="hours" id="hours"></div>
+      <div class="cols" id="cols"></div>
+    </div>
+  </section>
+
+  <section class="board" id="month">
+    <div class="bhead"><h2>DENSE MONTH</h2><span>AUGUST 2026 · 7×5 · WK GUTTER</span></div>
+    <div class="mwrap">
+      <div class="mgrid" id="mgrid"></div>
+    </div>
+  </section>
+
+</main>
+
+<p class="caption">review at ~412 CSS px width — phone-actual size</p>
+
+<script>
+(function(){
+  var ORDER=['w','p','f','n','h','j'];
+  var META={
+    w:{name:'work',    sig:'\u258C', col:'#FFFFFFE6', tier:'tier 1 · text 90%'},
+    p:{name:'personal',sig:'\u258F', col:'#FFFFFFCC', tier:'tier 2 · strong 80%'},
+    f:{name:'family',  sig:'\u2591', col:'#FFFFFF80', tier:'tier 3 · muted 50%'},
+    n:{name:'finance', sig:'\u2592', col:'#FFFFFF40', tier:'tier 4 · shade 25%'},
+    h:{name:'health',  sig:'\u2593', col:'#FFFFFF80', tier:'tier 5 · muted 50%'},
+    j:{name:'junk',    sig:'\u00B7', col:'#FFFFFF40', tier:'tier 6 · shade 25%'}
+  };
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+  function sg(k){return '<b style="color:'+META[k].col+'">'+META[k].sig+'</b>'}
+  function hm(m){return ('0'+Math.floor(m/60)).slice(-2)+':'+('0'+m%60).slice(-2)}
+
+  var map=document.getElementById('map');
+  map.innerHTML=ORDER.map(function(k){
+    return '<li><span class="sg" style="color:'+META[k].col+'">'+META[k].sig+'</span>'
+      +'<span class="nm">'+META[k].name+'</span>'
+      +'<span class="tier">'+META[k].tier+'</span>'
+      +'<i class="sw" style="background:'+META[k].col+'"></i>'
+      +'<code>'+META[k].col+'</code></li>';
+  }).join('');
+
+  document.querySelectorAll('.ramp').forEach(function(el){
+    var sz=el.getAttribute('data-sz'), n=+(el.getAttribute('data-n')||1), out='';
+    for(var r=0;r<n;r++){
+      out+=ORDER.map(function(k){
+        return '<span style="font-size:'+sz+'px;color:'+META[k].col+'">'+META[k].sig+'</span>';
+      }).join('');
+    }
+    el.innerHTML=out;
+  });
+
+  var ROWH=36, H0=420, DAYS=7;
+
+  var dh=document.getElementById('dayhead');
+  var DOW=['MON','TUE','WED','THU','FRI','SAT','SUN'], DATES=[17,18,19,20,21,22,23];
+  dh.innerHTML+=DATES.map(function(d,i){
+    return '<span class="dh'+(i===6?' tdy':'')+'"><em>'+DOW[i]+'</em><b>'+d+'</b></span>';
+  }).join('');
+
+  document.getElementById('hours').innerHTML=[0,1,2,3,4,5,6,7,8,9,10,11,12,13].map(function(i){
+    return '<span style="top:'+(i*ROWH)+'px">'+hm(H0+i*60)+'</span>';
+  }).join('');
+
+  var AL=[
+    {a:0,b:3,k:'w',t:'OFFSITE — client Q3'},
+    {a:1,b:2,k:'f',t:'PHOTO DAY'},
+    {a:4,b:7,k:'h',t:'VACAY HOLD'}
+  ];
+  document.getElementById('adlane').innerHTML=AL.map(function(e){
+    return '<span class="adc" style="left:'+(e.a/DAYS*100)+'%;width:'+(e.b-e.a)/DAYS*100+'%">'
+      +sg(e.k)+'<span class="tt">'+esc(e.t)+'</span></span>';
+  }).join('');
+
+  var EV=[
+    [0,540,570,'w','Standup'],[0,600,720,'w','Sprint planning'],[0,750,810,'p','Lunch w/ Ana'],
+    [0,840,900,'w','1:1 Priya'],[0,840,885,'n','Card payment'],[0,1110,1170,'h','Swim laps'],
+    [1,495,540,'f','School run'],[1,540,570,'w','Standup'],[1,660,750,'w','Platform review'],
+    [1,1080,1200,'p','Climbing gym'],
+    [2,540,570,'w','Standup'],[2,840,900,'w','Design crit',1],[2,840,930,'p','Dentist'],
+    [2,855,885,'f','Pickup swap'],[2,960,1020,'n','Invoice batch'],[2,1140,1200,'f','Family dinner'],
+    [3,540,570,'w','Standup'],[3,630,675,'h','Physio'],[3,780,840,'w','Roadmap sync'],
+    [3,780,840,'p','Coffee w/ Sam'],[3,1200,1260,'w','Deploy window'],
+    [4,540,570,'w','Standup'],[4,720,780,'w','All-hands'],[4,750,810,'n','Payday transfer'],
+    [4,720,750,'j','Inbox sprint'],[4,1140,1260,'p','Date night'],
+    [5,480,570,'h','Trail run'],[5,570,660,'f','Farmers market'],[5,900,1020,'p','Board games'],
+    [6,510,630,'h','Long ride'],[6,660,720,'f','Brunch host'],[6,690,750,'p','Nap guard'],
+    [6,660,690,'j','Coupons'],[6,960,1020,'w','Prep Monday'],[6,1080,1125,'n','Weekly ledger']
+  ].map(function(a){return {c:a[0],s:a[1],e:a[2],k:a[3],t:a[4],sel:a[5]||0}});
+
+  var cols=document.getElementById('cols');
+  cols.innerHTML=[0,1,2,3,4,5,6].map(function(c){
+    return '<div class="daycol'+(c===6?' tdy':'')+'" data-c="'+c+'"></div>';
+  }).join('');
+
+  [0,1,2,3,4,5,6].forEach(function(ci){
+    var lane=cols.children[ci];
+    var list=EV.filter(function(e){return e.c===ci}).sort(function(a,b){return a.s-b.s||b.e-a.e});
+    var i=0;
+    while(i<list.length){
+      var grp=[list[i]], end=list[i].e;
+      while(i+grp.length<list.length && list[i+grp.length].s<end){
+        var nxt=list[i+grp.length]; grp.push(nxt);
+        if(nxt.e>end)end=nxt.e;
+      }
+      var n=grp.length, span=end-grp[0].s;
+      grp.forEach(function(ev,gi){
+        var top,left,w,h,cls='ev';
+        if(n===1){top=(ev.s-H0)/60*ROWH;h=(ev.e-ev.s)/60*ROWH;left=2;w='calc(100% - 4px)';}
+        else if(n===2){top=(ev.s-H0)/60*ROWH;h=(ev.e-ev.s)/60*ROWH;left=gi? '51%':'1px';w='calc(49% - 2px)';}
+        else{
+          cls+=' stk';
+          var y0=grp[0].s, slice=span/n;
+          top=(y0+gi*slice-H0)/60*ROWH; h=slice/60*ROWH; left=1; w='calc(100% - 3px)';
+        }
+        if(h<15)h=15;
+        if(ev.sel)cls+=' sel';
+        var inner = (n>=3)
+          ? sg(ev.k)+'<em class="tt">'+esc(ev.t)+'</em><span class="tm">'+hm(ev.s)+'</span>'
+          : '<span class="row">'+sg(ev.k)+'<em class="tt">'+esc(ev.t)+'</em></span><span class="tm">'+hm(ev.s)+'–'+hm(ev.e)+'</span>';
+        var el=document.createElement('div');
+        el.className=cls;
+        el.style.cssText='top:'+top+'px;height:'+h+'px;left:'+left+'px;width:'+w+';';
+        el.innerHTML=inner;
+        lane.appendChild(el);
+      });
+      i+=n;
+    }
+    if(ci===6){
+      var now=document.createElement('div');
+      now.className='now';
+      now.style.top=((9*60+47-H0)/60*ROWH)+'px';
+      now.innerHTML='<i></i>';
+      lane.appendChild(now);
+    }
+  });
+
+  var POOL={
+    w:['Standup','Retro','Crit','Review','1:1 Priya'],
+    p:['Gym','Climbing','Games','Date night'],
+    f:['School run','Pickup','Dinner','Brunch'],
+    n:['Rent','Ledger','Budget','Invoices'],
+    h:['Swim','Physio','Trail run','Ride'],
+    j:['Purge','Coupons','Unsub']
+  };
+
+  var mg=document.getElementById('mgrid');
+  var html='<div></div>'+DOW.map(function(d){return '<div class="mh">'+d+'</div>'}).join('');
+  for(var r=0;r<5;r++){
+    html+='<div class="wk">'+(32+r)+'</div>';
+    for(var c=0;c<7;c++){
+      var dt=new Date(2026,7,3+r*7+c);
+      var dom=dt.getDate(), inM=dt.getMonth()===7, dow=dt.getDay();
+      var today=inM&&dom===23;
+      var count=!inM?1:(dow===0?2:((dom%7===3&&dow<6)?4:3));
+      var chips='';
+      for(var x=0;x<count;x++){
+        var k=ORDER[(dom+x*3+c)%6], arr=POOL[k];
+        chips+='<span class="chip">'+sg(k)+esc(arr[(dom+x)%arr.length])+'</span>';
+      }
+      var plus=count>3?'<span class="more">+'+(count-3)+'</span>':'';
+      html+='<div class="mcell'+(inM?'':' out')+(today?' today':'')+'">'
+        +'<span class="dn">'+dom+'</span>'+chips+plus+'</div>';
+    }
+  }
+  mg.innerHTML=html;
+})();
+</script>
+</body>
+</html>

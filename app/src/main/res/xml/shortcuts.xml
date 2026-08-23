@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WS11 static launcher shortcuts (design §12). Icons reuse @mipmap/ic_launcher;
+     dedicated glyphs are deferred. Labels live in values/strings.xml because
+     AAPT requires references for shortcut labels. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Opens EditorActivity, whose manifest filter carries
+         INSERT + vnd.android.cursor.dir/event. -->
+    <shortcut
+        android:shortcutId="new_event"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_new_event"
+        android:shortcutLongLabel="@string/shortcut_new_event">
+        <intent
+            android:action="android.intent.action.INSERT"
+            android:data="vnd.android.cursor.dir/event"
+            android:targetPackage="com.piercingxx.calendar"
+            android:targetClass="com.piercingxx.calendar.EditorActivity"/>
+    </shortcut>
+
+    <!-- Reuses MainActivity's VIEW content://com.android.calendar/time filter.
+         A static shortcut cannot embed the current epoch millis
+         (/time/<nowMillis> needs runtime data); it lands on the app's
+         schedule-today default instead. -->
+    <shortcut
+        android:shortcutId="today"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_today"
+        android:shortcutLongLabel="@string/shortcut_today">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="content://com.android.calendar/time"
+            android:targetPackage="com.piercingxx.calendar"
+            android:targetClass="com.piercingxx.calendar.MainActivity"/>
+    </shortcut>
+
+</shortcuts>

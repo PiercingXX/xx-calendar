@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Design §12. Exactly this list and nothing more.
+         INTERNET is deliberately absent: D3 makes the privacy claim
+         machine-checkable via aapt2 (design R3, §11). -->
+    <uses-permission android:name="android.permission.READ_CALENDAR"/>
+    <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.XxCalendar"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- Deep link to a point in time: content://com.android.calendar/time/<epoch-millis>. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data
+                    android:scheme="content"
+                    android:host="com.android.calendar"
+                    android:pathPrefix="/time"/>
+            </intent-filter>
+            <!-- .ics files. Import itself is WS10; being the handler is the claim. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/calendar"/>
+            </intent-filter>
+        </activity>
+
+        <!-- singleTask so repeated INSERT intents reuse one editor instead of
+             stacking copies (design §12). -->
+        <activity
+            android:name=".EditorActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.INSERT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="vnd.android.cursor.dir/event"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <action android:name="android.intent.action.EDIT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="vnd.android.cursor.item/event"/>
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"/>
+
+        <!-- Protected system broadcasts; only the OS can send either action.
+             LOCKED_BOOT_COMPLETED is declared for the direct-boot path; WS8
+             decides whether the reconciler opts into directBootAware. -->
+        <receiver
+            android:name=".alarm.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- Alarm PendingIntent target plus the clock/timezone triggers the
+             design's failure table requires re-reconciliation for (§10).
+             Not exported: TIME_SET / TIMEZONE_CHANGED / MY_PACKAGE_REPLACED
+             are protected broadcasts only the system can send, and protected
+             broadcasts are delivered to non-exported receivers regardless of
+             the exported check (same pattern as WorkManager's boot receivers).
+             Anything else reaching this receiver would be spoofable. -->
+        <receiver
+            android:name=".alarm.ReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.TIME_SET"/>
+                <action android:name="android.intent.action.TIMEZONE_CHANGED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".widget.MonthWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_month_info"/>
+        </receiver>
+
+        <receiver
+            android:name=".widget.ScheduleWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_schedule_info"/>
+        </receiver>
+
+        <!-- XX-Launcher theme broadcast, as TxxT implements it. Exported by
+             necessity: the sender is another app, not the system. -->
+        <receiver
+            android:name=".widget.ThemeSyncReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.piercingxx.launcher.THEME_CHANGED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- WS11 static launcher shortcuts (New event, Today). -->
+        <meta-data
+            android:name="android.app.shortcuts"
+            android:resource="@xml/shortcuts"/>
+
+    </application>
+
+</manifest>

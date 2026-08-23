@@ -1,0 +1,83 @@
+# WS12 — the machine-checkable privacy claim (design.md §11, R3/D3), plus the
+# JVM suite and the instrumented suite's COMPILE.
+#
+# What this workflow deliberately does NOT do:
+# - no deploy steps, anywhere;
+# - no instrumented RUN: CI has no device. Executing the androidTest suite is
+#   the owner-side adb task documented in todo.md WS12; here we only keep it
+#   compiling so it cannot rot.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-gate:
+    name: unit tests · debug APK · INTERNET gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17 (temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Installs the SDK cmdline tools, accepts the licenses and exports
+      # ANDROID_HOME. There is no local.properties in CI (gitignored); AGP
+      # resolves the SDK from ANDROID_HOME alone.
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Pinned build-tools so the aapt2 that adjudicates R3 is deterministic.
+      - name: Pin build-tools (aapt2)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "build-tools;35.0.0"
+
+      # Wrapper downloads, dependencies and build outputs cached across runs.
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      # --warning-mode all: surface Groovy/deprecations early, in full, while
+      # the toolchain is young — cheaper than discovering them at an upgrade.
+      - name: Unit tests + debug APK
+        run: ./gradlew --warning-mode all testDebugUnitTest assembleDebug
+
+      - name: Compile instrumented suite (no device needed)
+        run: ./gradlew --warning-mode all assembleDebugAndroidTest
+
+      # design §11 verbatim in spirit: grep for INTERNET must find ZERO
+      # matches, else the build fails. R3 is a build gate, not a promise.
+      - name: R3 gate — INTERNET must be absent
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+
+          AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          if [ ! -x "$AAPT2" ]; then
+            # Fall back to the newest installed build-tools.
+            AAPT2="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)aapt2"
+          fi
+
+          PERMISSIONS="$("$AAPT2" dump permissions "$APK")"
+          echo "$PERMISSIONS"
+
+          if printf '%s\n' "$PERMISSIONS" | grep -q 'android.permission.INTERNET'; then
+            echo "::error title=R3 violated::android.permission.INTERNET declared in $APK"
+            exit 1
+          fi
+          echo "R3 gate passed: no INTERNET permission in $APK"

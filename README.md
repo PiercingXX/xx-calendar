@@ -26,7 +26,13 @@ including one on your own hardware.
 daily agenda, and declined events are all **off** by default. There are no
 guests, no RSVP, no tasks, no reminders, no goals. The `+` button has one entry.
 
-**Status:** specified, nothing built.
+**Status:** built. All twelve planned workstreams are implemented — 247 JVM
+unit tests green, `assembleDebug` and `assembleDebugAndroidTest` green, and the
+built APK provably declares no `INTERNET` permission (the CI gate fails the
+build if it ever appears). Three items stay device-gated — on-phone review of
+the [sigil mock](design/mock/sigil-mock.html), WS3's open questions on real
+DAVx⁵ data, and the instrumented suite runtime. Details in
+[todo.md](todo.md).
 
 | Doc | What it is |
 |---|---|

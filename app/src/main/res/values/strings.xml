@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XX-Calendar</string>
+
+    <!-- WS11 shortcut labels. AAPT requires references (not literals) here. -->
+    <string name="shortcut_new_event">New event</string>
+    <string name="shortcut_today">Today</string>
+</resources>
