@@ -8,6 +8,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.piercingxx.calendar.R
+import com.piercingxx.calendar.settings.AppFont
 
 // Both faces are monospace, so tabular figures are automatic: every digit
 // column aligns by construction and no fontFeature work is ever needed.
@@ -87,3 +88,8 @@ val CalendarType = Typography(
     labelMedium = Label,
     labelSmall = Label.copy(fontSize = 10.sp, lineHeight = 14.sp),
 )
+
+/** The §8.6 font row resolves here; one face ships this wave (§7). */
+fun calendarTypography(font: AppFont): Typography = when (font) {
+    AppFont.JETBRAINS_MONO -> CalendarType
+}

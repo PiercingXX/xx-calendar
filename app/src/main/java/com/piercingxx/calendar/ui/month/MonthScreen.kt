@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -34,15 +35,19 @@ import androidx.compose.ui.unit.dp
 import com.piercingxx.calendar.calendar.CalendarInstance
 import com.piercingxx.calendar.calendar.CalendarRepository
 import com.piercingxx.calendar.calendar.CalendarSummary
+import com.piercingxx.calendar.calendar.InstanceFilters
 import com.piercingxx.calendar.core.AgendaGrouping
 import com.piercingxx.calendar.core.CalendarKey
 import com.piercingxx.calendar.core.InstanceSpan
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
+import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import com.piercingxx.calendar.ui.theme.MonthHeader
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
@@ -55,10 +60,13 @@ import kotlinx.coroutines.launch
 /**
  * Month (design §8.4): a 7×N grid with horizontal paging between months,
  * up to three event chips per day cell, and a Schedule-style day peek beneath
- * the grid so the month stays visible when a day is selected.
+ * the grid so the month stays visible when a day is selected. The leading
+ * column and the optional week-number gutter follow §8.6's `startDayOfWeek`
+ * and `weekNumbers`.
  *
  * Data window is the shown month ± [WINDOW_MARGIN_DAYS]; re-queried on every
- * provider change. The sigil map loads exactly as in ScheduleScreen (§6.1):
+ * provider change, then run through §8.6's consumption filters exactly like
+ * the other views. The sigil map loads exactly as in ScheduleScreen (§6.1):
  * persisted map, allocate unseen calendars, persist what is new.
  *
  * [onEventClick] exists so the chrome can route peek taps to the detail sheet;
@@ -69,16 +77,19 @@ import kotlinx.coroutines.launch
 fun MonthScreen(
     modifier: Modifier = Modifier,
     showWeekNumbers: Boolean = false,
+    firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY,
     onEventClick: (Long) -> Unit = {},
 ) {
     val colors = LocalCalendarColors.current
     val context = LocalContext.current
     val repository = remember { CalendarRepository(context.contentResolver) }
     val sigilStore = remember { SigilStore(context.applicationContext) }
+    val settingsStore = remember { SettingsStore(context.applicationContext) }
     val zone = remember { ZoneId.systemDefault() }
 
     var sigils by remember { mutableStateOf(emptyMap<CalendarKey, SigilTier>()) }
     var calendarsById by remember { mutableStateOf(emptyMap<Long, CalendarSummary>()) }
+    val appSettings by settingsStore.settings.collectAsState(initial = AppSettings())
 
     // Sigil assignment pass (§6.1) — identical to ScheduleScreen.
     LaunchedEffect(repository, sigilStore) {
@@ -120,13 +131,34 @@ fun MonthScreen(
     // Per-month caches; the effect loads the shown month plus both neighbours
     // so a swipe finds its chips already waiting.
     var monthCache by remember { mutableStateOf(emptyMap<YearMonth, MonthEvents>()) }
+    // Filters change what a cached month should contain, so the cache records
+    // which filter set built it and is dropped wholesale when they move.
+    val currentFilters = Triple(
+        appSettings.showDeclined,
+        appSettings.hideAutoAdded,
+        appSettings.autoAddedFilterMode,
+    )
+    var cacheFilters by remember { mutableStateOf(currentFilters) }
     val shownMonth = baseMonth.plusMonths((pagerState.currentPage - START_PAGE).toLong())
 
-    LaunchedEffect(shownMonth, revision, sigils, calendarsById) {
+    LaunchedEffect(
+        shownMonth,
+        revision,
+        sigils,
+        calendarsById,
+        appSettings.showDeclined,
+        appSettings.hideAutoAdded,
+        appSettings.autoAddedFilterMode,
+    ) {
+        if (cacheFilters != currentFilters) {
+            cacheFilters = currentFilters
+            monthCache = emptyMap()
+        }
         for (offset in -1L..1L) {
             val month = shownMonth.plusMonths(offset)
-            if (monthCache[month] == null) {
-                val loaded = loadMonthEvents(repository, zone, month)
+            val cached = monthCache[month]
+            if (cached == null) {
+                val loaded = loadMonthEvents(repository, zone, month, appSettings, calendarsById)
                 monthCache = monthCache + (month to loaded)
             }
         }
@@ -161,12 +193,13 @@ fun MonthScreen(
             val pageMonth = baseMonth.plusMonths((page - START_PAGE).toLong())
             val pageData = monthCache[pageMonth]
             MonthGrid(
-                weeks = buildWeeks(pageMonth, pageData?.eventsByDate.orEmpty()),
                 showWeekNumbers = showWeekNumbers,
+                firstDayOfWeek = firstDayOfWeek,
                 today = today,
                 selected = peekSelected,
                 tiersByCalendarId = tiersByCalendarId,
                 onSelect = { date -> selectedDay = date },
+                weeks = buildWeeks(pageMonth, pageData?.eventsByDate.orEmpty(), firstDayOfWeek),
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -237,17 +270,25 @@ private fun monthLabel(month: YearMonth): String =
     month.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
         .uppercase(Locale.getDefault()) + " " + month.year
 
-/** One month's provider window expanded and grouped per day. */
+/** One month's provider window expanded, filtered per §8.6, grouped per day. */
 private suspend fun loadMonthEvents(
     repository: CalendarRepository,
     zone: ZoneId,
     month: YearMonth,
+    appSettings: AppSettings,
+    calendarsById: Map<Long, CalendarSummary>,
 ): MonthEvents {
     val firstCell = month.atDay(1).minusDays(WINDOW_MARGIN_DAYS)
     val lastCell = month.atEndOfMonth().plusDays(WINDOW_MARGIN_DAYS)
-    val instances = repository.instances(
-        TimeMath.localDayStart(firstCell, zone),
-        TimeMath.localDayStart(lastCell.plusDays(1), zone),
+    val instances = InstanceFilters.apply(
+        repository.instances(
+            TimeMath.localDayStart(firstCell, zone),
+            TimeMath.localDayStart(lastCell.plusDays(1), zone),
+        ),
+        showDeclined = appSettings.showDeclined,
+        hideAutoAdded = appSettings.hideAutoAdded,
+        autoAddedFilterMode = appSettings.autoAddedFilterMode,
+        calendarsById = calendarsById,
     )
     val byEventId = instances.associateBy { it.eventId }
     val buckets = AgendaGrouping.group(
@@ -263,14 +304,15 @@ private suspend fun loadMonthEvents(
 }
 
 /**
- * Whole-month weeks under the locale's first day of week. Out-of-month cells
+ * Whole-month weeks under §8.6's first day of week. Out-of-month cells
  * render from the same ± margin data, so their chips are real occurrences.
  */
 internal fun buildWeeks(
     month: YearMonth,
     eventsByDate: Map<LocalDate, List<CalendarInstance>>,
+    firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY,
 ): List<List<MonthDayCell>> {
-    val leading = leadingDays(month)
+    val leading = leadingDays(month, firstDayOfWeek)
     val gridStart = month.atDay(1).minusDays(leading.toLong())
     val weekCount = (leading + month.lengthOfMonth() + 6) / 7
     return List(weekCount) { weekIndex ->
@@ -285,14 +327,9 @@ internal fun buildWeeks(
     }
 }
 
-/** Days of the preceding week that lead the grid, locale first-day aware. */
-internal fun leadingDays(month: YearMonth): Int =
-    (month.atDay(1).dayOfWeek.value + 7 - localeFirstDayOfWeekIso()) % 7
-
-private fun localeFirstDayOfWeekIso(): Int =
-    java.time.temporal.WeekFields.of(Locale.getDefault()).firstDayOfWeek.get(
-        java.time.temporal.ChronoField.DAY_OF_WEEK,
-    )
+/** Days of the preceding week that lead the grid, first-day-of-week aware. */
+internal fun leadingDays(month: YearMonth, firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY): Int =
+    (month.atDay(1).dayOfWeek.value + 7 - firstDayOfWeek.value) % 7
 
 /** Occurrences of one month grouped per day; all-day ahead of timed. */
 private data class MonthEvents(

@@ -11,13 +11,24 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
 
+    <!-- Guards ThemeSyncReceiver below. protectionLevel=signature means only
+         apps signed with the PiercingXX key (XX-Launcher) can hold it, so a
+         random installed app can no longer broadcast the background change
+         (review P2, ExportedReceiver). The launcher must declare
+         <uses-permission> for this name to keep theme sync working. -->
+    <permission
+        android:name="com.piercingxx.calendar.permission.THEME_SYNC"
+        android:protectionLevel="signature"/>
+
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.XxCalendar"
         android:allowBackup="false"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules">
 
         <activity
             android:name=".MainActivity"
@@ -118,10 +129,13 @@
         </receiver>
 
         <!-- XX-Launcher theme broadcast, as TxxT implements it. Exported by
-             necessity: the sender is another app, not the system. -->
+             necessity: the sender is another app, not the system. Guarded by
+             the signature-level THEME_SYNC permission above — senders must be
+             signed with the PiercingXX key AND hold the permission. -->
         <receiver
             android:name=".widget.ThemeSyncReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.piercingxx.calendar.permission.THEME_SYNC">
             <intent-filter>
                 <action android:name="com.piercingxx.launcher.THEME_CHANGED"/>
             </intent-filter>

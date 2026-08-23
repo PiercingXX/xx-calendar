@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import com.piercingxx.calendar.calendar.CalendarRepository
 import com.piercingxx.calendar.calendar.CalendarSummary
 import com.piercingxx.calendar.calendar.EventDraft
@@ -148,7 +149,7 @@ fun DetailSheet(
     fun requestDelete() {
         val current = loaded ?: return
         if (current.draft.rrule != null &&
-            RRuleModel.parse(current.draft.rrule!!) is RuleParse.Refused
+            RRuleModel.parse(current.draft.rrule) is RuleParse.Refused
         ) {
             refusalReason =
                 "this event repeats with a rule this app does not model, " +
@@ -284,12 +285,12 @@ fun DetailSheet(
 
                         // Location
                         if (!draft.location.isNullOrBlank()) {
-                            SheetField("location", draft.location!!)
+                            SheetField("location", draft.location)
                         }
 
                         // Description
                         if (!draft.description.isNullOrBlank()) {
-                            SheetField("notes", draft.description!!)
+                            SheetField("notes", draft.description)
                         }
 
                         // Reminders
@@ -310,7 +311,7 @@ fun DetailSheet(
                                     modifier = Modifier.clickable {
                                         runCatching {
                                             context.startActivity(
-                                                Intent(Intent.ACTION_VIEW, Uri.parse(conferenceUrl))
+                                                Intent(Intent.ACTION_VIEW, conferenceUrl.toUri())
                                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                             )
                                         }.onFailure {
@@ -463,7 +464,7 @@ private fun conferenceUrlOf(loaded: LoadedEvent): String? =
 
 // The Attachments table is @hide in the public SDK; the provider still serves
 // it to normal clients. Count only - names/contents are never read (§8.5).
-private val ATTACHMENTS_URI: Uri = Uri.parse("content://com.android.calendar/attachments")
+private val ATTACHMENTS_URI: Uri = "content://com.android.calendar/attachments".toUri()
 
 private suspend fun attachmentCount(resolver: ContentResolver, eventId: Long): Int =
     withContext(Dispatchers.IO) {

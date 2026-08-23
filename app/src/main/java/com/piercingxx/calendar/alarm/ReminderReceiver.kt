@@ -13,6 +13,10 @@ import android.text.format.DateUtils
 import androidx.core.app.NotificationCompat
 import com.piercingxx.calendar.MainActivity
 import com.piercingxx.calendar.R
+import com.piercingxx.calendar.settings.Settings
+import com.piercingxx.calendar.settings.SettingsStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /**
  * Two jobs, one class (design §4.3, §12 manifest):
@@ -23,10 +27,14 @@ import com.piercingxx.calendar.R
  *    (§10's clock/timezone/update rows) and the internal daily heartbeat all
  *    just run another reconcile pass. No per-event logic anywhere.
  *
- * Notification content is deliberately minimal (D12 quiet defaults): app
- * name as the title, the event's start time as the text — no title preview,
- * IMPORTANCE_DEFAULT so no heads-up. Declined events can never reach this
- * path because the planner already filtered them.
+ * Notification content honours §8.6's quiet-posture switches:
+ *  - `headsUp` off (default) → DEFAULT-importance channel, no heads-up; on →
+ *    a HIGH-importance channel so the platform may banner it.
+ *  - `lockScreenTitle` off (default) → app name as the title, PRIVATE
+ *    lock-screen visibility with a redacted public version; on → the event's
+ *    title is fetched and shown and visibility is PUBLIC.
+ * Declined events can never reach this path because the planner already
+ * filtered them.
  */
 class ReminderReceiver : BroadcastReceiver() {
 
@@ -68,28 +76,75 @@ class ReminderReceiver : BroadcastReceiver() {
         // warn row is where that becomes visible.
         if (!notificationsGranted(app)) return
 
-        ensureChannel(app)
+        // One blocking DataStore read per delivery (short local file); the
+        // §8.6 switches must be current at post time, not at process start.
+        val settings = runBlocking(Dispatchers.IO) {
+            runCatching { SettingsStore(app.applicationContext).current() }
+                .getOrDefault(Settings())
+        }
+        val showTitle = settings.lockScreenTitle
+        val headsUp = settings.headsUp
+
+        ensureChannel(app, headsUp)
         val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val whenText = formatEventTime(app, key.instanceStartMillis)
+        val appName = app.getString(R.string.app_name)
         val tapIntent = PendingIntent.getActivity(
             app,
             AlarmKeys.stableRequestCode(key),
             Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification: Notification = NotificationCompat.Builder(app, CHANNEL_ID)
+        val title = if (showTitle) queryEventTitle(app, key.eventId) ?: appName else appName
+        val notification: Notification = NotificationCompat.Builder(app, channelIdFor(headsUp))
             // Framework asset on purpose: res/ is outside this workstream's
             // write scope. Swapping in a product glyph later is a one-liner.
             .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
-            .setContentTitle(app.getString(R.string.app_name))
+            .setContentTitle(title)
             .setContentText(whenText)
             .setStyle(NotificationCompat.BigTextStyle().bigText(whenText))
+            .setVisibility(lockscreenVisibilityFor(showTitle))
+            // Pre-O heads-up hint; the channel importance does the real work.
+            .setPriority(
+                if (headsUp) NotificationCompat.PRIORITY_MAX else NotificationCompat.PRIORITY_DEFAULT,
+            )
             .setAutoCancel(true)
             .setContentIntent(tapIntent)
+            .also { builder ->
+                if (!showTitle) {
+                    // Redacted lock-screen rendering: the public version shows
+                    // only what D12 allows — app name + start time.
+                    builder.setPublicVersion(
+                        NotificationCompat.Builder(app, channelIdFor(headsUp))
+                            .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
+                            .setContentTitle(appName)
+                            .setContentText(whenText)
+                            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                            .build(),
+                    )
+                }
+            }
             .build()
         manager.notify(AlarmKeys.stableRequestCode(key), notification)
     }
+
+    /** The event's own title for §8.6 `lockScreenTitle`; null when unreadable. */
+    private fun queryEventTitle(app: Context, eventId: Long): String? = runCatching {
+        app.contentResolver.query(
+            android.provider.CalendarContract.Events.CONTENT_URI,
+            arrayOf(android.provider.CalendarContract.Events.TITLE),
+            "${android.provider.CalendarContract.Events._ID}=?",
+            arrayOf(eventId.toString()),
+            null,
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                c.getString(0)?.takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
 
     /** App name + start time only — no event title, no preview (D12). */
     private fun formatEventTime(context: Context, instanceStartMillis: Long): String =
@@ -107,17 +162,21 @@ class ReminderReceiver : BroadcastReceiver() {
             PackageManager.PERMISSION_GRANTED
     }
 
-    /** Idempotent by contract; cheap enough to call on every delivery. */
-    private fun ensureChannel(app: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    /**
+     * Idempotent by contract; cheap enough to call on every delivery. The
+     * heads-up switch selects the channel — importance is a channel property,
+     * so quiet and bannered reminders live in separate channels rather than
+     * mutating one under the user. Notification channels are API 26+; minSdk
+     * is 26, so no version guard is needed here.
+     */
+    private fun ensureChannel(app: Context, headsUp: Boolean) {
         val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // Name is a literal because res/ is outside this workstream's scope.
         manager.createNotificationChannel(
-            // Name is a literal because res/ is outside this workstream's
-            // scope; IMPORTANCE_DEFAULT keeps heads-up off (D12 quiet).
             NotificationChannel(
-                CHANNEL_ID,
+                channelIdFor(headsUp),
                 "Reminders",
-                NotificationManager.IMPORTANCE_DEFAULT,
+                if (headsUp) NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT,
             ),
         )
     }
@@ -125,7 +184,22 @@ class ReminderReceiver : BroadcastReceiver() {
     companion object {
         const val CHANNEL_ID = "reminders"
 
+        /** HIGH-importance channel for §8.6 `headsUp`; created on demand. */
+        const val CHANNEL_ID_HEADS_UP = "reminders_heads_up"
+
         /** Internal heartbeat action delivered via explicit intent; not in the manifest. */
         const val ACTION_DAILY_HEARTBEAT = "com.piercingxx.calendar.alarm.DAILY_HEARTBEAT"
+
+        /** Channel chosen per delivery from §8.6 `headsUp`. */
+        internal fun channelIdFor(headsUp: Boolean): String =
+            if (headsUp) CHANNEL_ID_HEADS_UP else CHANNEL_ID
+
+        /** PUBLIC shows the real title on the lock screen; PRIVATE redacts to [public version]. */
+        internal fun lockscreenVisibilityFor(showTitle: Boolean): Int =
+            if (showTitle) {
+                NotificationCompat.VISIBILITY_PUBLIC
+            } else {
+                NotificationCompat.VISIBILITY_PRIVATE
+            }
     }
 }

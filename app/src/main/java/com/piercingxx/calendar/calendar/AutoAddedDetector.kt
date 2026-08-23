@@ -50,7 +50,6 @@ object AutoAddedDetector {
     )
 
     fun isLikelyAutoAdded(
-        instance: CalendarInstance?,
         calendar: CalendarSummary?,
         metadata: Metadata = Metadata(),
     ): Boolean {

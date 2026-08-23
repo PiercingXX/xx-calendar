@@ -58,20 +58,29 @@ data class EditorForm(
         }
 
     companion object {
-        /** A blank event; a create gesture may pin the initial times to the grid. */
-        fun new(deviceZone: ZoneId, startMillis: Long?, endMillis: Long?): EditorForm {
+        /**
+         * A blank event; a create gesture may pin the initial times to the
+         * grid. Duration and seed reminder come from §8.6's editor defaults.
+         */
+        fun new(
+            deviceZone: ZoneId,
+            startMillis: Long?,
+            endMillis: Long?,
+            durationMinutes: Long = DEFAULT_DURATION_MINUTES,
+            reminderMinutes: Int = DEFAULT_REMINDER_MINUTES,
+        ): EditorForm {
             val now = LocalDateTime.now(deviceZone)
             val start = if (startMillis != null) {
                 Instant.ofEpochMilli(startMillis).atZone(deviceZone).toLocalDateTime()
             } else {
                 // Next half-hour mark, per the grid's snap rhythm.
-                now.plusMinutes(DEFAULT_DURATION_MINUTES).withSecond(0).withNano(0)
+                now.plusMinutes(durationMinutes).withSecond(0).withNano(0)
                     .let { if (it.minute < 30) it.withMinute(30) else it.plusHours(1).withMinute(0) }
             }
             val end = if (endMillis != null) {
                 Instant.ofEpochMilli(endMillis).atZone(deviceZone).toLocalDateTime()
             } else {
-                start.plusMinutes(DEFAULT_DURATION_MINUTES)
+                start.plusMinutes(durationMinutes)
             }
             return EditorForm(
                 title = "",
@@ -86,7 +95,7 @@ data class EditorForm(
                 calendarId = 0L,
                 location = "",
                 description = "",
-                reminders = listOf(DEFAULT_REMINDER_MINUTES),
+                reminders = listOf(reminderMinutes),
                 busy = true,
             )
         }
@@ -309,13 +318,13 @@ fun endsLabel(form: EditorForm): String =
     else LocalDateTime.of(form.endDate, form.endTime ?: LocalTime.MIDNIGHT).format(DATE_TIME_FORMAT)
 
 /** §8.5 repeats row: plain words first, structure only when it exists. */
-fun repeatLabel(rule: RRuleModel?, unreadable: Boolean, anchor: LocalDate): String = when {
+fun repeatLabel(rule: RRuleModel?, unreadable: Boolean): String = when {
     unreadable -> "unrecognised rule"
     rule == null -> "does not repeat"
-    else -> describe(rule, anchor)
+    else -> describe(rule)
 }
 
-private fun describe(rule: RRuleModel, anchor: LocalDate): String {
+private fun describe(rule: RRuleModel): String {
     val every = if (rule.interval > 1) "every ${rule.interval} " else ""
     val core = when (rule.frequency) {
         Frequency.DAILY -> if (rule.interval > 1) "every ${rule.interval} days" else "daily"

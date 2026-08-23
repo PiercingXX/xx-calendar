@@ -1,5 +1,9 @@
 package com.piercingxx.calendar.settings
 
+import android.provider.CalendarContract.Events
+import com.piercingxx.calendar.calendar.FakeProviderFixture
+import com.piercingxx.calendar.calendar.Fixtures.seedCalendar
+import com.piercingxx.calendar.calendar.Fixtures.seedEvent
 import com.piercingxx.calendar.settings.IcsCodec.IcsEvent
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -10,12 +14,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
 /**
  * WS10: the RFC 5545 subset codec — round-trips over the fixture matrix,
- * folding correctness, UID duplicate skipping, escaping torture.
+ * folding correctness, UID duplicate skipping, escaping torture. The §9
+ * provider-coupled exchange ([IcsExchange]) runs against the fake provider:
+ * real-UID export, UID_2445 written on import, and double-import dedupe.
  */
-class IcsCodecTest {
+@RunWith(RobolectricTestRunner::class)
+class IcsCodecTest : FakeProviderFixture() {
 
     private fun utc(y: Int, m: Int, d: Int, h: Int = 0, min: Int = 0): Long =
         LocalDateTime.of(y, m, d, h, min).toInstant(ZoneOffset.UTC).toEpochMilli()
@@ -64,6 +73,28 @@ class IcsCodecTest {
         assertEquals("5-7@xx-calendar", IcsCodec.uidOf(5, 7))
         val result = parse(IcsCodec.exportToString(listOf(timed(eventId = 5, calendarId = 7))))
         assertEquals("5-7@xx-calendar", result.events.single().uid)
+    }
+
+    @Test
+    fun `export emits the row real uid_2445 when the row carries one`() {
+        val original = timed().copy(uid = "google-server-uid@google.com")
+        val exported = IcsCodec.exportToString(listOf(original))
+        assertTrue(exported.contains("UID:google-server-uid@google.com\r\n"))
+        assertFalse(exported.contains("@xx-calendar\r\n"))
+    }
+
+    @Test
+    fun `export falls back to the synthetic uid when the row has none`() {
+        assertNull(timed(eventId = 5, calendarId = 7).uid)
+        val exported = IcsCodec.exportToString(listOf(timed(eventId = 5, calendarId = 7)))
+        assertTrue(exported.contains("UID:5-7@xx-calendar\r\n"))
+    }
+
+    @Test
+    fun `blank stored uid falls back to synthetic rather than emitting an empty identity`() {
+        val original = timed(eventId = 3, calendarId = 4).copy(uid = "   ")
+        val exported = IcsCodec.exportToString(listOf(original))
+        assertTrue(exported.contains("UID:3-4@xx-calendar\r\n"))
     }
 
     // ---------------------------------------------------------- round trip
@@ -585,5 +616,75 @@ class IcsCodecTest {
         ).joinToString("\r\n")
         val result = IcsCodec.parse(text.toByteArray(Charsets.ISO_8859_1))
         assertEquals("café lunch", result.events.single().title)
+    }
+
+    // ------------------------------------------------- §9 provider exchange
+
+    /** A minimal single-VEVENT file, the shape export produces. */
+    private fun icsFile(uid: String?, summary: String = "imported"): String = listOf(
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//PiercingXX//XX-Calendar//EN",
+        "BEGIN:VEVENT",
+        uid?.let { "UID:$it" },
+        "DTSTART:20260901T090000Z",
+        "DTEND:20260901T100000Z",
+        "SUMMARY:$summary",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        "",
+    ).filterNotNull().joinToString("\r\n")
+
+    @Test
+    fun `importing the same file twice inserts zero rows the second time`() {
+        val calendarId = fake.seedCalendar()
+        val originalUid = "dedupe-me@xx-calendar"
+
+        val first = parse(icsFile(originalUid), IcsExchange.knownUids(resolver))
+        assertEquals(1, IcsExchange.insertDrafts(resolver, calendarId, first.events))
+        assertEquals(1, fake.events.size)
+        // Dedupe can only see the import because the insert wrote its UID.
+        assertEquals(originalUid, fake.events.values.single()[Events.UID_2445])
+
+        val second = parse(icsFile(originalUid), IcsExchange.knownUids(resolver))
+        assertTrue(second.events.isEmpty())
+        assertEquals(1, second.skippedDuplicateUids)
+        assertEquals(0, IcsExchange.insertDrafts(resolver, calendarId, second.events))
+        assertEquals("duplicate row created", 1, fake.events.size)
+    }
+
+    @Test
+    fun `exporting an imported event emits the file original uid`() {
+        val calendarId = fake.seedCalendar()
+        val originalUid = "orig@elsewhere.example"
+
+        IcsExchange.insertDrafts(resolver, calendarId, parse(icsFile(originalUid)).events)
+
+        val exportedRow = IcsExchange.collectExportEvents(resolver).single()
+        assertEquals(originalUid, exportedRow.uid)
+
+        val reexported = IcsCodec.exportToString(listOf(exportedRow))
+        assertTrue(reexported.contains("UID:$originalUid\r\n"))
+    }
+
+    @Test
+    fun `rows without stored uid_2445 still export under the synthetic identity`() {
+        val calendarId = fake.seedCalendar()
+        val eventId = fake.seedEvent(calendarId)
+
+        val exportedRow = IcsExchange.collectExportEvents(resolver).single()
+        assertNull(exportedRow.uid)
+        val synthetic = IcsCodec.uidOf(eventId, calendarId)
+        assertTrue(IcsCodec.exportToString(listOf(exportedRow)).contains("UID:$synthetic\r\n"))
+    }
+
+    @Test
+    fun `uid-less drafts import exactly as before without inventing an identity`() {
+        val calendarId = fake.seedCalendar()
+
+        val drafts = parse(icsFile(uid = null)).events
+        assertEquals(1, IcsExchange.insertDrafts(resolver, calendarId, drafts))
+
+        assertFalse(fake.events.values.single().containsKey(Events.UID_2445))
     }
 }

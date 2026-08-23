@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -38,12 +39,15 @@ import androidx.compose.ui.unit.sp
 import com.piercingxx.calendar.calendar.CalendarInstance
 import com.piercingxx.calendar.calendar.CalendarRepository
 import com.piercingxx.calendar.calendar.CalendarSummary
+import com.piercingxx.calendar.calendar.InstanceFilters
 import com.piercingxx.calendar.core.AgendaGrouping
 import com.piercingxx.calendar.core.CalendarKey
 import com.piercingxx.calendar.core.InstanceSpan
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
+import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.theme.Body
 import com.piercingxx.calendar.ui.theme.CalendarColors
@@ -75,10 +79,13 @@ fun ScheduleScreen(
     val context = LocalContext.current
     val repository = remember { CalendarRepository(context.contentResolver) }
     val sigilStore = remember { SigilStore(context.applicationContext) }
+    val settingsStore = remember { SettingsStore(context.applicationContext) }
     val zone = remember { ZoneId.systemDefault() }
 
     var sigils by remember { mutableStateOf(emptyMap<CalendarKey, SigilTier>()) }
     var calendarsById by remember { mutableStateOf(emptyMap<Long, CalendarSummary>()) }
+    // §8.6 consumption filters (declined / auto-added) re-run the window query.
+    val appSettings by settingsStore.settings.collectAsState(initial = AppSettings())
 
     // Sigil assignment pass (§6.1): persisted map, allocate unseen calendars,
     // persist when anything new was assigned.
@@ -117,10 +124,20 @@ fun ScheduleScreen(
         state.startDay,
         state.endDay,
         state.revision,
+        appSettings.showDeclined,
+        appSettings.hideAutoAdded,
+        appSettings.autoAddedFilterMode,
+        calendarsById,
     ) {
-        val instances = repository.instances(
-            TimeMath.localDayStart(LocalDate.ofEpochDay(state.startDay), zone),
-            TimeMath.localDayStart(LocalDate.ofEpochDay(state.endDay).plusDays(1), zone),
+        val instances = InstanceFilters.apply(
+            repository.instances(
+                TimeMath.localDayStart(LocalDate.ofEpochDay(state.startDay), zone),
+                TimeMath.localDayStart(LocalDate.ofEpochDay(state.endDay).plusDays(1), zone),
+            ),
+            showDeclined = appSettings.showDeclined,
+            hideAutoAdded = appSettings.hideAutoAdded,
+            autoAddedFilterMode = appSettings.autoAddedFilterMode,
+            calendarsById = calendarsById,
         )
         val byEventId = instances.associateBy { it.eventId }
         value = AgendaGrouping.group(

@@ -10,6 +10,11 @@ import com.piercingxx.calendar.core.EventFieldEdits
 import com.piercingxx.calendar.core.Resolution
 import com.piercingxx.calendar.core.RRuleModel
 import com.piercingxx.calendar.core.RuleParse
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -22,7 +27,8 @@ import kotlinx.coroutines.CancellationException
  * |--------------------|--------------------------------------------------------------------|
  * | UpdateParentRow    | saveEvent(loaded draft + edits, opaque preserved verbatim)         |
  * | InsertExceptionRow | insert row with ORIGINAL_ID/ORIGINAL_INSTANCE_TIME/ORIGINAL_ALL_DAY|
- * | SplitParent        | UNTIL on parent RRULE, then insert new recurring row;              |
+ * | SplitParent        | UNTIL on parent RRULE; RDATE/EXDATE entries before the             |
+ * |                    | split stay on it, at-or-after ones move to the new row;            |
  * |                    | then tail exception rows are re-pointed onto the new row           |
  * | DeleteParentRow    | deleteEvent(parent)                                                |
  * | SetUntil           | parent RRULE rewritten with UNTIL; nothing else                    |
@@ -54,6 +60,13 @@ class SplitPartialException(
     message: String,
     cause: Throwable? = null,
 ) : IllegalStateException(message, cause)
+
+/** RDATE/EXDATE DATE-TIME body, UTC (`...Z`) or floating: `yyyyMMdd'T'HHmmss`. */
+private val RECURRENCE_DATETIME_FORMAT: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
+
+/** One row's RDATE/EXDATE strings after a partition (null when nothing remains). */
+private data class RecurrenceDates(val rdate: String?, val exdate: String?)
 
 class RecurrenceEditor(
     private val repository: CalendarRepository,
@@ -180,8 +193,18 @@ class RecurrenceEditor(
                 "cannot split the series: its recurrence rule is not recognised",
             )
 
-        // 1) Truncate the parent at just before this instance.
-        repository.saveEvent(parent.draft.copy(rrule = truncated), parent.opaque)
+        // 1) Truncate the parent at just before this instance, keeping on it
+        //    only the RDATE/EXDATE entries for occurrences it still owns.
+        val (parentDates, tailDates) =
+            splitRecurrenceDates(parent.draft, resolution.newRowStartMillis)
+        repository.saveEvent(
+            parent.draft.copy(
+                rrule = truncated,
+                rdate = parentDates.rdate,
+                exdate = parentDates.exdate,
+            ),
+            parent.opaque,
+        )
 
         // 2) Insert the new series starting at this instance.
         val edits = resolution.newRowEdits
@@ -211,8 +234,8 @@ class RecurrenceEditor(
             allDay = edits.allDay ?: base.allDay,
             eventEndTimezone = edits.eventEndTimezone ?: base.eventEndTimezone,
             rrule = rule.serialize(),
-            rdate = null,
-            exdate = null,
+            rdate = tailDates.rdate,
+            exdate = tailDates.exdate,
             availability = edits.availability ?: base.availability,
             colorKey = base.colorKey,
             originalId = null,
@@ -313,6 +336,84 @@ class RecurrenceEditor(
             is RuleParse.Refused -> null
         }
     }
+
+    /**
+     * RDATE/EXDATE partition for a split. Deleted-instance exclusions live in
+     * the parent's EXDATE string (§6.3: the provider writes it on an
+     * instance-uri delete) and RDATE additions ride beside them — neither is
+     * an exception ROW, so [migrateTailExceptions] cannot carry them over.
+     * Returns the parent-kept entries (strictly before [splitMillis], the same
+     * boundary its new UNTIL enforces) first and the continuation's entries
+     * (at or after the split, matching migrateTailExceptions' `>=`) second;
+     * skipping the second half would resurrect previously deleted tail
+     * occurrences inside the new series.
+     */
+    private fun splitRecurrenceDates(
+        draft: EventDraft,
+        splitMillis: Long,
+    ): Pair<RecurrenceDates, RecurrenceDates> {
+        val zone = zoneIdOf(draft.eventTimezone)
+        val (headExdate, tailExdate) = partitionDateValue(draft.exdate, splitMillis, zone)
+        val (headRdate, tailRdate) = partitionDateValue(draft.rdate, splitMillis, zone)
+        return RecurrenceDates(headRdate, headExdate) to RecurrenceDates(tailRdate, tailExdate)
+    }
+
+    /**
+     * Splits one comma-separated RDATE/EXDATE column value at [splitMillis]:
+     * entries strictly before it come back first, entries at or after second.
+     * Tokens keep their stored RFC 5545 form verbatim — only membership moves,
+     * never spelling. Unparseable tokens stay on the parent: dropping an
+     * exclusion could resurrect an occurrence, while keeping a dead one only
+     * costs bytes on a row that ends at UNTIL anyway.
+     */
+    private fun partitionDateValue(
+        raw: String?,
+        splitMillis: Long,
+        zone: ZoneId,
+    ): Pair<String?, String?> {
+        if (raw == null) return null to null
+        val tokens = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return raw to null
+        val head = mutableListOf<String>()
+        val tail = mutableListOf<String>()
+        for (token in tokens) {
+            val millis = recurrenceTokenMillis(token, zone)
+            if (millis != null && millis >= splitMillis) tail += token else head += token
+        }
+        return head.joinToString(",").ifEmpty { null } to tail.joinToString(",").ifEmpty { null }
+    }
+
+    /**
+     * Epoch millis of one RDATE/EXDATE token — the three spellings the
+     * provider and this app emit (cf. the tolerant reader in the instrumented
+     * suite): DATE `yyyyMMdd` read in the event's zone, or DATE-TIME
+     * `yyyyMMdd'T'HHmmss` with a trailing `Z` (UTC) or floating (also read in
+     * the event's zone). Null when the token is not recognised.
+     */
+    private fun recurrenceTokenMillis(token: String, zone: ZoneId): Long? {
+        val normalized = token.replace('t', 'T').replace('z', 'Z')
+        return try {
+            when {
+                normalized.length == 8 -> LocalDate.parse(
+                    normalized,
+                    DateTimeFormatter.BASIC_ISO_DATE,
+                ).atStartOfDay(zone).toInstant().toEpochMilli()
+
+                normalized.endsWith("Z") -> LocalDateTime.parse(
+                    normalized.dropLast(1),
+                    RECURRENCE_DATETIME_FORMAT,
+                ).toInstant(ZoneOffset.UTC).toEpochMilli()
+
+                else -> LocalDateTime.parse(normalized, RECURRENCE_DATETIME_FORMAT)
+                    .atZone(zone).toInstant().toEpochMilli()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun zoneIdOf(eventTimezone: String?): ZoneId =
+        eventTimezone?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: ZoneOffset.UTC
 
     /**
      * Nullable-edit merge: a null payload with its clear flag false keeps the

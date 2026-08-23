@@ -5,9 +5,12 @@ import android.database.ContentObserver
 import android.net.Uri
 import android.provider.CalendarContract
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.calendar.CalendarSummary
 import com.piercingxx.calendar.core.CalendarKey
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
+import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import androidx.compose.ui.graphics.Color
 import androidx.glance.appwidget.GlanceAppWidgetManager
@@ -16,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -47,18 +51,20 @@ internal object WidgetTokens {
 /**
  * The §6.1 sigil pass, exactly as ScheduleScreen/MonthScreen run it:
  * persisted map, allocate unseen calendars, persist what is new, then a
- * per-calendar-id lookup defaulting to TIER_6.
+ * per-calendar-id lookup defaulting to TIER_6. [calendars] may be passed in
+ * when the caller already queried them.
  */
 internal suspend fun sigilTiersByCalendarId(
     repository: CalendarRepository,
     sigilStore: SigilStore,
+    calendars: List<CalendarSummary>? = null,
 ): Map<Long, SigilTier> {
-    val calendars = repository.calendars()
-    val byId = calendars.associateBy { it.id }
+    val list = calendars ?: repository.calendars()
+    val byId = list.associateBy { it.id }
     val existing = sigilStore.load()
     val assignment = SigilAssigner.assign(
         existing,
-        calendars.map { CalendarKey(it.id, it.accountName ?: "") },
+        list.map { CalendarKey(it.id, it.accountName ?: "") },
     )
     if (assignment.newlyAssigned.isNotEmpty()) {
         sigilStore.save(assignment.assignments)
@@ -67,6 +73,15 @@ internal suspend fun sigilTiersByCalendarId(
         assignment.assignments[CalendarKey(summary.id, summary.accountName ?: "")] ?: SigilTier.TIER_6
     }
 }
+
+/**
+ * §8.6 settings for a widget render pass (both widgets are suspended while
+ * composing). Defaults on any read failure so a broken store degrades to the
+ * quiet defaults instead of blanking the widget.
+ */
+internal suspend fun currentWidgetSettings(context: Context): AppSettings =
+    runCatching { SettingsStore(context.applicationContext).settings.first() }
+        .getOrDefault(AppSettings())
 
 /**
  * Process-lifetime provider watch for both widgets (WS11 update strategy):

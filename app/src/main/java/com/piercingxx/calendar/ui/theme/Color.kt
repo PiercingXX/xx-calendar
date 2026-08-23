@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.colorResource
 import com.piercingxx.calendar.R
+import com.piercingxx.calendar.settings.AppBackground
 
 /**
  * The PiercingXX token set (design §7), dark-only. The white-opacity ramp
@@ -31,25 +32,29 @@ data class CalendarColors(
     val info: Color,
 )
 
+/** The §8.6 background row resolves here; one variant ships this wave (§7). */
 @Composable
-fun calendarColors(): CalendarColors = CalendarColors(
-    ink = colorResource(R.color.pxx_ink),
-    signal = colorResource(R.color.pxx_signal),
-    emphasisBg = colorResource(R.color.pxx_emphasis_bg),
-    emphasisFg = colorResource(R.color.pxx_emphasis_fg),
-    inkRaised = colorResource(R.color.pxx_ink_raised),
-    graphite = colorResource(R.color.pxx_graphite),
-    slate = colorResource(R.color.pxx_slate),
-    line = colorResource(R.color.pxx_white_10),
-    shade = colorResource(R.color.pxx_white_25),
-    muted = colorResource(R.color.pxx_white_50),
-    strong = colorResource(R.color.pxx_white_80),
-    text = colorResource(R.color.pxx_white_90),
-    warn = colorResource(R.color.pxx_warn),
-    error = colorResource(R.color.pxx_error),
-    ok = colorResource(R.color.pxx_ok),
-    info = colorResource(R.color.pxx_info),
-)
+fun calendarColors(background: AppBackground = AppBackground.AMOLED_NIGHT): CalendarColors =
+    when (background) {
+        AppBackground.AMOLED_NIGHT -> CalendarColors(
+            ink = colorResource(R.color.pxx_ink),
+            signal = colorResource(R.color.pxx_signal),
+            emphasisBg = colorResource(R.color.pxx_emphasis_bg),
+            emphasisFg = colorResource(R.color.pxx_emphasis_fg),
+            inkRaised = colorResource(R.color.pxx_ink_raised),
+            graphite = colorResource(R.color.pxx_graphite),
+            slate = colorResource(R.color.pxx_slate),
+            line = colorResource(R.color.pxx_white_10),
+            shade = colorResource(R.color.pxx_white_25),
+            muted = colorResource(R.color.pxx_white_50),
+            strong = colorResource(R.color.pxx_white_80),
+            text = colorResource(R.color.pxx_white_90),
+            warn = colorResource(R.color.pxx_warn),
+            error = colorResource(R.color.pxx_error),
+            ok = colorResource(R.color.pxx_ok),
+            info = colorResource(R.color.pxx_info),
+        )
+    }
 
 val LocalCalendarColors = staticCompositionLocalOf<CalendarColors> {
     error("CalendarColors not provided - wrap content in CalendarTheme")

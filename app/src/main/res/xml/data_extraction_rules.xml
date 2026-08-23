@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 31+ data extraction rules (android:dataExtractionRules).
+
+     What this app persists locally: the `settings` DataStore
+     (SettingsStore.kt) — non-sensitive UI preferences (view defaults,
+     appearance, notification toggles) — plus sigils, likewise non-sensitive.
+     Calendar data itself never lands here; it lives in the system
+     CalendarProvider under its own backup regime.
+
+     Sensible default chosen (review P2): follow the Android defaults and
+     include everything — there is deliberately nothing sensitive to exclude,
+     and restoring a device transfer should restore the user's setup.
+     NOTE: android:allowBackup is currently "false", so these rules are inert
+     until backup is turned on; they exist so the switch is a one-line change
+     with policy already decided. -->
+<data-extraction-rules>
+    <!-- Platform defaults: cloud-backup and device-transfer include all app
+         data. Add <exclude> here if anything sensitive ever lands in
+         app storage. -->
+</data-extraction-rules>

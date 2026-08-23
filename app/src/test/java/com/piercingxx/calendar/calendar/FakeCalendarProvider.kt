@@ -24,8 +24,8 @@ import java.time.format.DateTimeFormatter
  *
  * Expansion is deliberately naive: non-recurring events yield one occurrence
  * when `[dtstart, dtend)` intersects the window; RRULEs are expanded only for
- * FREQ=DAILY (+ INTERVAL, UNTIL), everything else falls back to the single
- * occurrence at DTSTART. That is enough to exercise range filtering, sorting,
+ * FREQ=DAILY/WEEKLY (+ INTERVAL, UNTIL), everything else falls back to the
+ * single occurrence at DTSTART. That is enough to exercise range filtering, sorting,
  * all-day surfacing and margin plumbing — NOT enough to model Google's
  * expansion semantics, which is exactly why WS12 runs instrumented tests
  * against the real provider.
@@ -74,7 +74,9 @@ class FakeCalendarProvider : ContentProvider() {
     ): Cursor {
         val segments = uri.pathSegments
         val table = segments.firstOrNull() ?: throw IllegalArgumentException("bad uri $uri")
-        if (table == "instances") return instancesCursor(segments, projection)
+        if (table == "instances") {
+            return instancesCursor(segments, projection, selection, selectionArgs, sortOrder)
+        }
         val rows = when (table) {
             "calendars" -> calendars.values
             "events" -> events.values
@@ -144,21 +146,31 @@ class FakeCalendarProvider : ContentProvider() {
         return rows.sortedWith(if (descending) comparator.reversed() else comparator)
     }
 
-    private fun instancesCursor(segments: List<String>, projection: Array<out String>?): Cursor {
+    private fun instancesCursor(
+        segments: List<String>,
+        projection: Array<out String>?,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+        sortOrder: String?,
+    ): Cursor {
         val begin = segments.getOrNull(2)?.toLongOrNull() ?: Long.MIN_VALUE
         val end = segments.getOrNull(3)?.toLongOrNull() ?: Long.MAX_VALUE
         require(begin <= end) { "invalid instance window [$begin, $end)" }
         val occurrences = events.values.flatMap { expand(it, begin, end) }
-            .sortedWith(
-                compareBy {
-                    (it[CalendarContract.Events.DTSTART] as? Number)?.toLong() ?: Long.MIN_VALUE
-                },
-            )
-        val columns = resolveColumns(occurrences, projection)
+            .filter { matches(it, selection, selectionArgs) }
+        val sorted = if (sortOrder.isNullOrBlank()) {
+            occurrences.sortedWith(compareBy { beginOf(it) })
+        } else {
+            applySort(occurrences, sortOrder)
+        }
+        val columns = resolveColumns(sorted, projection)
         val cursor = MatrixCursor(columns)
-        occurrences.forEach { row -> cursor.addRow(columns.map { row[it] }) }
+        sorted.forEach { row -> cursor.addRow(columns.map { row[it] }) }
         return cursor
     }
+
+    private fun beginOf(row: Map<String, Any?>): Long =
+        (row[CalendarContract.Instances.BEGIN] as? Number)?.toLong() ?: Long.MIN_VALUE
 
     private fun resolveColumns(
         rows: Collection<Map<String, Any?>>,
@@ -322,13 +334,18 @@ class FakeCalendarProvider : ContentProvider() {
             val interval = Regex("INTERVAL=(\\d+)").find(upper)
                 ?.groupValues?.get(1)?.toLongOrNull() ?: 1L
             val until = parseUntilMillis(upper)
-            if ("FREQ=DAILY" in upper) {
+            val freq = Regex("FREQ=(\\w+)").find(upper)?.groupValues?.get(1)
+            val stepMillis = when (freq) {
+                "WEEKLY" -> 7 * DAY_MILLIS
+                else -> DAY_MILLIS
+            }
+            if (freq == "DAILY" || freq == "WEEKLY") {
                 var s = dtstart
                 var guard = 0
                 while (s < windowEnd && guard < MAX_EXPANSION && (until == null || s <= until)) {
                     val e = durationSeconds?.let { s + it * 1000 } ?: (fixedEnd + (s - dtstart))
                     spans += s to e
-                    s += interval * DAY_MILLIS
+                    s += interval * stepMillis
                     guard++
                 }
             } else {
@@ -342,14 +359,23 @@ class FakeCalendarProvider : ContentProvider() {
 
     private fun occurrenceRow(event: Map<String, Any?>, start: Long, end: Long): Map<String, Any?> {
         val row = LinkedHashMap(event)
-        row[CalendarContract.Events.DTSTART] = start
-        row[CalendarContract.Events.DTEND] = end
-        // Generated-table columns a real Instances query always carries.
+        // Series columns ride along verbatim, exactly as CalendarProvider2
+        // returns them on every expanded row: Instances inherits EventsColumns,
+        // so DTSTART/DTEND describe the SERIES (and DTEND is absent when the
+        // series is duration-based). Only BEGIN/END carry this occurrence.
+        if (!(event[CalendarContract.Events.DURATION] as? String).isNullOrBlank()) {
+            row.remove(CalendarContract.Events.DTEND)
+        }
+        // Generated-table columns a real Instances query always carries; the
+        // Instances URI also joins Calendars, so VISIBLE filters like on-device.
         row[CalendarContract.Instances.EVENT_ID] =
             (event[CalendarContract.Events._ID] as? Number)?.toLong() ?: 0L
         row[CalendarContract.Instances.BEGIN] = start
         row[CalendarContract.Instances.END] = end
         row[CalendarContract.Instances._ID] = --occurrenceSeq
+        val calendarId = (event[CalendarContract.Events.CALENDAR_ID] as? Number)?.toLong()
+        row[CalendarContract.Calendars.VISIBLE] =
+            calendarId?.let { calendars[it]?.get(CalendarContract.Calendars.VISIBLE) } ?: 0L
         return row
     }
 

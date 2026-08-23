@@ -1,6 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Release signing is optional: when keystore.properties exists at the repo root
+// (storeFile / storePassword / keyAlias / keyPassword) the release buildType
+// signs with it; without the file release falls back to the debug key so CI and
+// fresh clones keep building. keystore.properties itself is gitignored.
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -16,23 +27,61 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        // Shared PiercingXX sideload identity (copied from nope-mode). Changing
+        // this later means uninstall-and-lose-state on the phone — never rotate.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
+            // R8 stays off until the instrumented suite has run against a real
+            // device (review P1): minification without that evidence risks
+            // shipping a stripped reflection/provider surface we cannot verify.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = if (keystoreProperties.isNotEmpty()) {
+                signingConfigs.getByName("release")
+            } else {
+                // Loud, not silent: without keystore.properties a "release" APK
+                // carries the public, committed debug identity — fine for
+                // personal sideloads, never for distribution.
+                logger.warn(
+                    "XX-Calendar: no keystore.properties found — " +
+                        "release APK will be signed with the shared DEBUG key. " +
+                        "Provide keystore.properties for a distributable release.",
+                )
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
 
     buildFeatures {
@@ -48,6 +97,14 @@ android {
         unitTests {
             isIncludeAndroidResources = true
         }
+    }
+
+    lint {
+        // OldTargetApi: targetSdk 35 is deliberate until the instrumented
+        // suite has run against a real device (review P2) — a targetSdk bump
+        // changes runtime behavior and needs device verification, so the
+        // "not on the very latest" warning is suppressed rather than obeyed.
+        disable += "OldTargetApi"
     }
 }
 

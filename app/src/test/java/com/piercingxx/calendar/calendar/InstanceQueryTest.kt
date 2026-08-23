@@ -89,7 +89,7 @@ class InstanceQueryTest : FakeProviderFixture() {
     }
 
     @Test
-    fun `range is half-open and results sort by DTSTART ascending`() = runTest {
+    fun `range is half-open and results sort by instance start ascending`() = runTest {
         seedStandardSet()
 
         val instances = CalendarRepository(resolver).instances(windowStart, windowEnd)
@@ -128,6 +128,62 @@ class InstanceQueryTest : FakeProviderFixture() {
         assertEquals(utc(2026, 8, 10, 8, 0), gym.startMillis)
         assertEquals(utc(2026, 8, 10, 9, 0), gym.endMillis)
         org.junit.Assert.assertNull(gym.duration)
+    }
+
+    @Test
+    fun `third occurrence of a weekly series reports its own start and end`() = runTest {
+        val calendarId = fake.seedCalendar()
+        // Series anchored Wednesday Aug 5; occurrences Aug 5/12/19 at 09:00.
+        fake.seedEvent(
+            calendarId,
+            Events.TITLE to "weekly sync",
+            Events.DTSTART to utc(2026, 8, 5, 9, 0),
+            Events.DTEND to utc(2026, 8, 5, 10, 0),
+            Events.RRULE to "FREQ=WEEKLY",
+        )
+
+        val instances = CalendarRepository(resolver)
+            .instances(utc(2026, 8, 5, 0, 0), utc(2026, 8, 26, 0, 0))
+            .filter { it.title == "weekly sync" }
+
+        assertEquals(
+            listOf(
+                utc(2026, 8, 5, 9, 0),
+                utc(2026, 8, 12, 9, 0),
+                utc(2026, 8, 19, 9, 0),
+            ),
+            instances.map { it.startMillis },
+        )
+        // Regression: the third occurrence must carry ITS extent — not the
+        // series anchor (Aug 5) that DTSTART would report on every row.
+        val third = instances[2]
+        assertEquals(utc(2026, 8, 19, 9, 0), third.startMillis)
+        assertEquals(utc(2026, 8, 19, 10, 0), third.endMillis)
+    }
+
+    @Test
+    fun `hidden calendar instances are absent from results`() = runTest {
+        val shown = fake.seedCalendar(displayName = "shown")
+        val hidden = fake.seedCalendar(displayName = "hidden", visible = false)
+        fake.seedEvent(
+            shown,
+            Events.TITLE to "kept",
+            Events.DTSTART to utc(2026, 8, 10, 9, 0),
+            Events.DTEND to utc(2026, 8, 10, 10, 0),
+        )
+        fake.seedEvent(
+            hidden,
+            Events.TITLE to "dropped",
+            Events.DTSTART to utc(2026, 8, 10, 11, 0),
+            Events.DTEND to utc(2026, 8, 10, 12, 0),
+        )
+
+        val titles = CalendarRepository(resolver)
+            .instances(windowStart, windowEnd)
+            .map { it.title }
+
+        assertTrue(titles.contains("kept"))
+        assertFalse(titles.contains("dropped"))
     }
 
     @Test

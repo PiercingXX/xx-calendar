@@ -1,10 +1,14 @@
 package com.piercingxx.calendar.ui.editor
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.piercingxx.calendar.core.RecurrenceScope
 import com.piercingxx.calendar.ui.theme.Body
 import com.piercingxx.calendar.ui.theme.EventTitle
@@ -13,7 +17,9 @@ import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 /**
  * The §6.3 scope prompt. Raised only when a save or delete touches a recurring
  * event — never for a single row (§6.3: the prompt is disorienting there).
- * The three answers map 1:1 onto [RecurrenceScope]; Cancel writes nothing.
+ * [title] is the event's own name, passed by every caller so the user can see
+ * *which* series they are scoping; the three answers map 1:1 onto
+ * [RecurrenceScope]; Cancel writes nothing.
  */
 @Composable
 fun ScopePrompt(
@@ -30,11 +36,17 @@ fun ScopePrompt(
             Text("repeat?", style = EventTitle, color = colors.text)
         },
         text = {
-            Text(
-                "this happens more than once - which events change?",
-                style = Body,
-                color = colors.muted,
-            )
+            Column {
+                if (title.isNotBlank()) {
+                    Text(title, style = EventTitle, color = colors.text)
+                    Spacer(Modifier.height(10.dp))
+                }
+                Text(
+                    "this happens more than once - which events change?",
+                    style = Body,
+                    color = colors.muted,
+                )
+            }
         },
         confirmButton = {
             Column {

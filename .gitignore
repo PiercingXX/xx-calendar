@@ -13,7 +13,12 @@ export*/
 secrets/
 *.pem
 *.key
+# Never commit signing material — the shared debug keystore is the one
+# deliberate exception (mirrors nope-mode; see NOTICE and review P1).
+*.keystore
 !debug.keystore
+# Release signing material (storeFile/storePassword/keyAlias/keyPassword).
+keystore.properties
 
 # ─── Android ─────────────────────────────────────────────────────────────
 local.properties

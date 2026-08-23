@@ -22,17 +22,23 @@ aapt2 dump permissions app/build/outputs/apk/debug/app-debug.apk
 No account, no network, no telemetry, no analytics. Any CalDAV server works,
 including one on your own hardware.
 
-**Defaults with a spine.** Notification content preview, heads-up alerts, the
-daily agenda, and declined events are all **off** by default. There are no
-guests, no RSVP, no tasks, no reminders, no goals. The `+` button has one entry.
+**Defaults with a spine.** Notification content preview, heads-up alerts, and
+declined events are all **off** by default — and every switch in Settings
+actually switches something; the few that can't yet are absent, not decorative.
+There are no guests, no RSVP, no tasks, no Goals, and none of Google's
+*Reminders* entity — the reminder alarms XX-Calendar schedules for your own
+events are local notifications, not Google's feature by that name. The `+`
+button has one entry.
 
-**Status:** built. All twelve planned workstreams are implemented — 247 JVM
-unit tests green, `assembleDebug` and `assembleDebugAndroidTest` green, and the
-built APK provably declares no `INTERNET` permission (the CI gate fails the
-build if it ever appears). Three items stay device-gated — on-phone review of
-the [sigil mock](design/mock/sigil-mock.html), WS3's open questions on real
-DAVx⁵ data, and the instrumented suite runtime. Details in
-[todo.md](todo.md).
+**Status:** feature-complete against the plan; unverified against a real
+provider. 289 JVM unit tests green, `lint` green, `assembleDebug` and
+`assembleDebugAndroidTest` green, and the built APK provably declares no
+`INTERNET` permission (the CI gate fails the build if it ever appears; a local
+pre-push hook mirrors it while CI billing is broken). Three items stay
+device-gated — on-phone review of the [sigil mock](design/mock/sigil-mock.html),
+WS3's open questions on real DAVx⁵ data, and the instrumented suite runtime,
+which is the difference between "compiles" and "works". Details in
+[review.md](review.md) and [todo.md](todo.md).
 
 | Doc | What it is |
 |---|---|

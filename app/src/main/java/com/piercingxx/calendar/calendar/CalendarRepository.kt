@@ -7,10 +7,12 @@ import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
 import android.provider.CalendarContract
+import android.provider.CalendarContract.Attendees
 import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Instances
 import android.provider.CalendarContract.Reminders
+import com.piercingxx.calendar.settings.AutoAddedFilterMode
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -251,5 +253,91 @@ private fun EventDraft.writeModeledInto(values: ContentValues) {
     values.put(Events.ORIGINAL_INSTANCE_TIME, originalInstanceTime)
     if (originalAllDay != null) {
         values.put(Events.ORIGINAL_ALL_DAY, if (originalAllDay) 1 else 0)
+    }
+}
+
+/**
+ * The §8.6 consumption filters applied ABOVE the query layer, so every
+ * consumer of [CalendarRepository.instances] — Schedule, Day, Week, Month and
+ * both widgets — shares one implementation. Pure JVM: no Android calls beyond
+ * compile-time provider constants.
+ *
+ * HONESTY NOTE (design §17 open question 1): instance rows as projected by
+ * [InstanceQuery] carry no `CUSTOM_APP_PACKAGE`, so the METADATA mode's
+ * stage-2 evidence here is limited to booking URLs found in the event's
+ * description. A detector hit through that column would additionally require
+ * widening the projection; until then this layer simply cannot see it (the
+ * detector still checks it whenever a caller can supply the value).
+ */
+object InstanceFilters {
+
+    /**
+     * Declined = the event's own attendee status ([Instances.SELF_ATTENDEE_STATUS]
+     * == ATTENDEE_STATUS_DECLINED) — the same predicate ReminderPlanner applies.
+     */
+    fun isDeclined(instance: CalendarInstance): Boolean =
+        instance.selfAttendeeStatus == Attendees.ATTENDEE_STATUS_DECLINED
+
+    /** First http(s) URL in free text, or null. Stops at whitespace/quote/bracket/punctuation. */
+    fun firstUrl(text: String?): String? {
+        text ?: return null
+        val start = listOf(
+            text.indexOf("http://", ignoreCase = true),
+            text.indexOf("https://", ignoreCase = true),
+        ).filter { it >= 0 }.minOrNull() ?: return null
+        val end = indexOfFirstTerminator(text, start)
+        return text.substring(start, end).takeIf { it.length > MIN_URL_LENGTH }
+    }
+
+    private const val MIN_URL_LENGTH = "http://".length
+
+    private fun indexOfFirstTerminator(text: String, from: Int): Int {
+        for (i in from until text.length) {
+            val ch = text[i]
+            if (ch.isWhitespace() || ch in "<>\"')(,;[]") return i
+        }
+        return text.length
+    }
+
+    /** Stage-2 metadata reachable above the query layer: description URLs. */
+    fun metadataOf(instance: CalendarInstance): AutoAddedDetector.Metadata =
+        AutoAddedDetector.Metadata(url = firstUrl(instance.description))
+
+    /**
+     * Whether [instance] hides under [mode]:
+     *  - OFF — never (fail open; the global toggle alone decides nothing).
+     *  - CALENDAR — stage-1 signals only: source-calendar identity.
+     *  - METADATA — stages 1 + 2: calendar identity plus description URLs.
+     */
+    fun isHiddenAsAutoAdded(
+        instance: CalendarInstance,
+        calendar: CalendarSummary?,
+        mode: AutoAddedFilterMode,
+    ): Boolean = when (mode) {
+        AutoAddedFilterMode.OFF -> false
+        AutoAddedFilterMode.CALENDAR ->
+            AutoAddedDetector.isLikelyAutoAdded(calendar, AutoAddedDetector.Metadata())
+        AutoAddedFilterMode.METADATA ->
+            AutoAddedDetector.isLikelyAutoAdded(calendar, metadataOf(instance))
+    }
+
+    /**
+     * One pass over [instances]: declined occurrences dropped unless
+     * [showDeclined], auto-added ones dropped when [hideAutoAdded] arms
+     * [autoAddedFilterMode]. Order preserved; input list untouched.
+     */
+    fun apply(
+        instances: List<CalendarInstance>,
+        showDeclined: Boolean,
+        hideAutoAdded: Boolean,
+        autoAddedFilterMode: AutoAddedFilterMode,
+        calendarsById: Map<Long, CalendarSummary> = emptyMap(),
+    ): List<CalendarInstance> = instances.filter { instance ->
+        (showDeclined || !isDeclined(instance)) &&
+            (!hideAutoAdded || !isHiddenAsAutoAdded(
+                instance,
+                calendarsById[instance.calendarId],
+                autoAddedFilterMode,
+            ))
     }
 }

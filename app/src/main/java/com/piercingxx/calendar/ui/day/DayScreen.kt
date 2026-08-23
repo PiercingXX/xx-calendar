@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -22,10 +23,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.piercingxx.calendar.calendar.CalendarRepository
 import com.piercingxx.calendar.calendar.CalendarSummary
+import com.piercingxx.calendar.calendar.InstanceFilters
 import com.piercingxx.calendar.core.CalendarKey
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
+import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import java.time.LocalDate
@@ -51,11 +55,14 @@ fun DayScreen(
     val context = LocalContext.current
     val repository = remember { CalendarRepository(context.contentResolver) }
     val sigilStore = remember { SigilStore(context.applicationContext) }
+    val settingsStore = remember { SettingsStore(context.applicationContext) }
     val zone = remember { ZoneId.systemDefault() }
     val scope = rememberCoroutineScope()
 
     var sigils by remember { mutableStateOf(emptyMap<CalendarKey, SigilTier>()) }
     var calendarsById by remember { mutableStateOf(emptyMap<Long, CalendarSummary>()) }
+    // §8.6 consumption filters (declined / auto-added), as ScheduleScreen runs them.
+    val appSettings by settingsStore.settings.collectAsState(initial = AppSettings())
 
     // Sigil assignment pass (§6.1), as the schedule runs it.
     LaunchedEffect(repository, sigilStore) {
@@ -90,11 +97,21 @@ fun DayScreen(
         initialValue = emptyList(),
         state.epochDay,
         state.revision,
+        appSettings.showDeclined,
+        appSettings.hideAutoAdded,
+        appSettings.autoAddedFilterMode,
+        calendarsById,
     ) {
         val date = LocalDate.ofEpochDay(state.epochDay)
-        val instances = repository.instances(
-            TimeMath.localDayStart(date, zone),
-            TimeMath.localDayStart(date.plusDays(1), zone),
+        val instances = InstanceFilters.apply(
+            repository.instances(
+                TimeMath.localDayStart(date, zone),
+                TimeMath.localDayStart(date.plusDays(1), zone),
+            ),
+            showDeclined = appSettings.showDeclined,
+            hideAutoAdded = appSettings.hideAutoAdded,
+            autoAddedFilterMode = appSettings.autoAddedFilterMode,
+            calendarsById = calendarsById,
         )
         value = buildGridColumns(listOf(date), zone, instances)
     }

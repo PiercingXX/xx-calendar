@@ -54,6 +54,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -77,8 +78,15 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.piercingxx.calendar.alarm.ReminderPlanner
 import com.piercingxx.calendar.alarm.ReminderReconciler
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.settings.AppBackground
+import com.piercingxx.calendar.settings.AppFont
+import com.piercingxx.calendar.settings.DefaultView
+import com.piercingxx.calendar.settings.Density
+import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.ui.day.DayScreen
 import com.piercingxx.calendar.ui.detail.DetailSheet
 import com.piercingxx.calendar.ui.drawer.CalendarDrawer
@@ -92,13 +100,14 @@ import com.piercingxx.calendar.ui.theme.MonthHeader
 import com.piercingxx.calendar.ui.theme.SpaceMono
 import com.piercingxx.calendar.ui.theme.CalendarTheme
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
+import com.piercingxx.calendar.ui.theme.calendarColors
 import com.piercingxx.calendar.ui.week.WeekScreen
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.TextStyle as JavaTextStyle
-import java.time.temporal.WeekFields
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -114,8 +123,28 @@ class MainActivity : ComponentActivity() {
         ReminderReconciler.ensureObserving(this)
         pendingLink.value = parseDeepLink(intent)
         setContent {
-            CalendarTheme {
-                AppRoot(pending = pendingLink)
+            // §8.6 appearance rows reach the whole tree from here: the theme
+            // consumes the stored background/font/scale values, and nothing
+            // renders until the first emission so `default view` can pick the
+            // opening route without a visible reset.
+            val settingsStore = remember { SettingsStore(applicationContext) }
+            val settings by settingsStore.settings.collectAsState(initial = null)
+            CalendarTheme(
+                background = settings?.background ?: AppBackground.AMOLED_NIGHT,
+                font = settings?.font ?: AppFont.JETBRAINS_MONO,
+                textSizeScale = settings?.textSizeScale ?: 1.0f,
+                density = settings?.density ?: Density.COMFORTABLE,
+            ) {
+                val loaded = settings
+                if (loaded == null) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(calendarColors().ink),
+                    )
+                } else {
+                    AppRoot(pending = pendingLink, settings = loaded)
+                }
             }
         }
     }
@@ -171,6 +200,14 @@ private const val ROUTE_DAY = "day"
 private const val ROUTE_WEEK = "week"
 private const val ROUTE_MONTH = "month"
 
+/** §8.6 `default view` -> navigation route opened at launch. */
+private fun routeFor(view: DefaultView): String = when (view) {
+    DefaultView.SCHEDULE -> ROUTE_SCHEDULE
+    DefaultView.DAY -> ROUTE_DAY
+    DefaultView.WEEK -> ROUTE_WEEK
+    DefaultView.MONTH -> ROUTE_MONTH
+}
+
 /**
  * Permission gate first (design §10): without calendar access there is no UI
  * at all - one explanatory screen, one grant button, and on permanent denial
@@ -179,6 +216,7 @@ private const val ROUTE_MONTH = "month"
 @Composable
 internal fun AppRoot(
     pending: MutableState<DeepLink?>,
+    settings: AppSettings,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -218,7 +256,7 @@ internal fun AppRoot(
         return
     }
 
-    AppShell(pending = pending, modifier = modifier)
+    AppShell(pending = pending, settings = settings, modifier = modifier)
 }
 
 @Composable
@@ -293,6 +331,7 @@ private fun PermissionGate(
 @Composable
 private fun AppShell(
     pending: MutableState<DeepLink?>,
+    settings: AppSettings,
     modifier: Modifier = Modifier,
 ) {
     val navController = rememberNavController()
@@ -305,6 +344,16 @@ private fun AppShell(
     val scheduleWindow = remember { ScheduleWindowState() }
     val repository = remember { CalendarRepository(context.contentResolver) }
 
+    // §8.6 all-day notification: mirror the setting into the planner (whose
+    // call path this file cannot re-route) and re-reconcile so already-planned
+    // alarms converge onto the new anchor.
+    LaunchedEffect(settings.allDayNotification) {
+        if (ReminderPlanner.allDayPolicy != settings.allDayNotification) {
+            ReminderPlanner.allDayPolicy = settings.allDayNotification
+            runCatching { ReminderReconciler.reconcile(context) }
+        }
+    }
+
     // §12 deep links are consumed only here, below the permission gate: no
     // external URI can navigate or read anything before calendar access is
     // granted. A link that arrives pre-grant simply waits in [pending].
@@ -316,7 +365,11 @@ private fun AppShell(
                         .atZone(ZoneId.systemDefault())
                         .toLocalDate(),
                 )
-                navController.popBackStack(ROUTE_SCHEDULE, inclusive = false)
+                // The link lands on Schedule; when a non-default §8.6 view is
+                // the start destination there is no schedule entry to pop to.
+                if (!navController.popBackStack(ROUTE_SCHEDULE, inclusive = false)) {
+                    navController.navigate(ROUTE_SCHEDULE) { launchSingleTop = true }
+                }
             }
             DeepLink.ImportIcs -> {
                 // Deferred honesty: WS10's import lives inside SettingsScreen
@@ -341,7 +394,7 @@ private fun AppShell(
     ) {
         Scaffold(
             containerColor = colors.ink,
-            topBar = { CalendarTopBar(navController, scheduleWindow) },
+            topBar = { CalendarTopBar(navController, scheduleWindow, settings) },
             floatingActionButton = {
                 FloatingActionButton(
                     onClick = { navController.navigate("editor/null-placeholder") },
@@ -352,9 +405,13 @@ private fun AppShell(
                 }
             },
         ) { padding ->
+            // §8.6 default view: captured on first composition (this composable
+            // only exists once settings have loaded), so a later settings edit
+            // never yanks the user out of the view they are in.
+            val startDestination = remember { routeFor(settings.defaultView) }
             NavHost(
                 navController = navController,
-                startDestination = ROUTE_SCHEDULE,
+                startDestination = startDestination,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
@@ -378,7 +435,13 @@ private fun AppShell(
                         onNavigate = { navController.navigate(it) },
                     )
                 }
-                composable(ROUTE_MONTH) { MonthScreen(Modifier.fillMaxSize()) }
+                composable(ROUTE_MONTH) {
+                    MonthScreen(
+                        Modifier.fillMaxSize(),
+                        showWeekNumbers = settings.weekNumbers,
+                        firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
+                    )
+                }
                 // WS7: the real detail sheet. Ids arrive as strings and are
                 // parsed defensively - a malformed id renders nothing rather
                 // than crashing navigation.
@@ -444,7 +507,11 @@ private val VIEWS = listOf(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CalendarTopBar(navController: NavController, scheduleWindow: ScheduleWindowState) {
+private fun CalendarTopBar(
+    navController: NavController,
+    scheduleWindow: ScheduleWindowState,
+    settings: AppSettings,
+) {
     val colors = LocalCalendarColors.current
     var menuOpen by remember { mutableStateOf(false) }
     var pickerOpen by remember { mutableStateOf(false) }
@@ -505,6 +572,7 @@ private fun CalendarTopBar(navController: NavController, scheduleWindow: Schedul
     if (pickerOpen) {
         MiniMonthPickerSheet(
             initialMonth = scheduleWindow.pickerMonth(),
+            firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
             onPick = { date ->
                 scheduleWindow.jumpTo(date)
                 pickerOpen = false
@@ -516,18 +584,19 @@ private fun CalendarTopBar(navController: NavController, scheduleWindow: Schedul
 
 /**
  * The mini-month picker (§8.1): one month grid with prev/next chevrons;
- * picking a day jumps the schedule window. Lean by design.
+ * picking a day jumps the schedule window. Lean by design. First column
+ * follows §8.6's start-day-of-week, like the month view.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MiniMonthPickerSheet(
     initialMonth: YearMonth,
+    firstDayOfWeek: DayOfWeek,
     onPick: (LocalDate) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = LocalCalendarColors.current
     var shown by remember { mutableStateOf(initialMonth) }
-    val firstDayOfWeek = remember { WeekFields.of(Locale.getDefault()).firstDayOfWeek }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.inkRaised) {
         Row(

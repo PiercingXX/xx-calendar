@@ -4,11 +4,17 @@ Spec: [design.md](design.md). Teardown:
 [design/google-calendar-teardown.md](design/google-calendar-teardown.md).
 Target: Pixel 9 Pro (`caiman`), GrapheneOS, Android 17 / SDK 37.
 
-**Status: built.** All twelve workstreams below are implemented: 247 JVM unit
-tests green, `assembleDebug` and `assembleDebugAndroidTest` green. The privacy
-claim is machine-proven — `aapt2 dump permissions` on the built APK shows zero
-`INTERNET`, and the CI gate in `.github/workflows/ci.yml` fails the build if it
-ever appears.
+**Status: feature-complete against the plan; unverified against a real
+provider.** All twelve workstreams are implemented, and every finding from
+[review.md](review.md) that could be fixed off-device is fixed: 289 JVM unit
+tests green, `lint` green, `assembleDebug` and `assembleDebugAndroidTest`
+green. The privacy claim is machine-proven — `aapt2 dump permissions` on the
+built APK shows zero `INTERNET`; the CI gate fails the build if it ever
+appears, and a local pre-push hook mirrors it while CI billing is broken.
+What "unverified" means: the instrumented suite has never run on hardware, so
+the provider layer's behavior against real CalendarProvider2 / DAVx⁵ data
+(including whether the provider accepts `UID_2445` from a normal client on
+import insert) is still evidence-free until it does.
 
 Toolchain deltas from design §14: AGP 8.9.1, Gradle 8.11.1, compileSdk/
 targetSdk 35 (environment baseline). Kotlin 1.9.24, Compose compiler 1.5.14,
@@ -88,13 +94,13 @@ account. Settings says so.
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 ./gradlew test assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.piercingxx.calendar/.ui.MainActivity
+adb shell am start -n com.piercingxx.calendar/.MainActivity
 ```
 
 Copy `debug.keystore` from Nope-Mode before the first build, so all PiercingXX
-sideloads keep one signing identity (design §14). Not done on this machine —
-the keystore was not available — so builds sign with the default
-`~/.android/debug.keystore`.
+sideloads keep one signing identity (design §14). Done 2026-08-23: the keystore
+now lives at `app/debug.keystore`, byte-identical to Nope-Mode's, wired as the
+debug signing config in `app/build.gradle.kts`.
 
 Vendor the brand tokens rather than retyping hexes:
 
@@ -278,6 +284,16 @@ timezone · Quick Settings tile · next-event widget.
 
 ## Post-build review — 2026-08-23
 
+> Superseded and extended by [review.md](review.md), an independent pass
+> over the same tree. Every item below is still open; review.md adds five
+> P0 correctness findings the 247 green tests do not cover.
+>
+> **Resolution pass, later on 2026-08-23:** all five review P0s fixed with
+> regression tests (suite now 289 green), and the Blocking/Should-do/Minor
+> items below are ticked where the fix is provable off-device. What remains
+> open is exactly what needs hardware or account access: CI billing, the
+> instrumented suite run, and the on-phone sigil-mock verdict.
+
 Verified on this machine: `./gradlew testDebugUnitTest assembleDebug` green,
 247 tests / 0 failures, manifest declares six permissions and `INTERNET` is not
 among them, no secrets or `.ics` in the tree, `.gitignore` correctly excludes
@@ -289,44 +305,63 @@ among them, no secrets or `.ics` in the tree, `.gitignore` correctly excludes
       `32654322807`, which died in two seconds: *"the job was not started
       because recent account payments have failed or your spending limit needs
       to be increased."* Private-repo Actions minutes are billed. The R3 gate —
-      this repo's central claim — is therefore unenforced on every push. Fix
-      billing, or mirror the `aapt2 dump permissions` check into a local
-      pre-push hook so the gate exists somewhere.
-- [ ] **Font licensing.** JetBrains Mono and Space Mono ship as `.ttf` under
+      this repo's central claim — is therefore unenforced on every push.
+      ~~Fix billing, or mirror the `aapt2 dump permissions` check into a local
+      pre-push hook so the gate exists somewhere.~~ Billing still needs the
+      account owner; the mirror now exists — `.githooks/pre-push` (active via
+      `core.hooksPath`) builds the debug APK and fails the push if `INTERNET`
+      appears. CI itself remains dead until billing is fixed.
+- [x] **Font licensing.** ~~JetBrains Mono and Space Mono ship as `.ttf` under
       `res/font/`. Both are OFL 1.1, which requires the license text and
       copyright notice travel with the fonts. `LICENSE` currently asserts
       "Copyright (c) 2026 PiercingXX / All rights reserved" over the whole
       tree, fonts included. Add `third-party/OFL.txt` for both faces and a
-      NOTICE line.
-- [ ] **The local-setup command above is wrong.** It reads
+      NOTICE line.~~ Done: `third-party/OFL.txt` carries the full OFL 1.1 text
+      with both families' copyright notices, `NOTICE` lists the bundled fonts,
+      and LICENSE carves them out of "all rights reserved".
+- [x] **The local-setup command above is wrong.** ~~It reads
       `am start -n com.piercingxx.calendar/.ui.MainActivity`; the manifest
-      declares `.MainActivity`. Copy-pasting it fails.
+      declares `.MainActivity`. Copy-pasting it fails.~~ Fixed above.
 
 ### Should do
 
-- [ ] Release build type has no `signingConfig` and `isMinifyEnabled = false` —
-      there is no path to a shippable release APK. Compounded by the open WS2
-      box: `debug.keystore` was never copied from Nope-Mode, so current
-      sideloads carry a different signing identity than the rest of PiercingXX.
-      Resolve before anything lands on a phone you intend to keep it on.
+- [x] Release build type has no `signingConfig` and `isMinifyEnabled = false` —
+      ~~there is no path to a shippable release APK.~~ Resolved half-way, on
+      purpose: release now signs via an optional `keystore.properties`
+      (gitignored; falls back to the shared debug key when absent), and the
+      shared identity is fixed — `app/debug.keystore` is Nope-Mode's,
+      byte-identical. R8 stays off until the instrumented suite has run on a
+      device; enabling minification blind would trade one unknown for another.
+      The first real release build should confirm the storeFile path resolves
+      as given.
 - [ ] Run the instrumented suite. All three suites guard exactly the failure
       modes this plan names as the real risk — recurring-scope writes, opaque
       column preservation, reminder reconciliation after boot. That they
-      compile is not evidence.
-- [ ] `sourceCompatibility`, `targetCompatibility` and `jvmTarget` are all
-      `1.8` under AGP 8.9 and JDK 17. Works, deprecated, removed in AGP 9.
-      Bump to 11 or 17.
-- [ ] Add `./gradlew lint` to the CI job. Cheap, and it catches manifest and
-      API-level problems that unit tests structurally cannot.
-- [ ] Add `distributionSha256Sum` to `gradle-wrapper.properties`.
+      compile is not evidence. (The suites grew with the review fixes: the
+      delete-then-split EXDATE interaction now has an end-to-end case in
+      `RecurringScopeRoundTripTest`, waiting on hardware.)
+- [x] `sourceCompatibility`, `targetCompatibility` and `jvmTarget` are all
+      ~~`1.8` under AGP 8.9 and JDK 17.~~ Bumped to 17.
+- [x] Add `./gradlew lint` to the CI job. Done; lint is green (0 errors).
+- [x] Add `distributionSha256Sum` to `gradle-wrapper.properties`. Done;
+      verified by deleting the wrapper dist and re-downloading.
 
 ### Minor
 
 - [ ] WS3's two open questions remain unanswered, which means the auto-added
       event filter in Settings ships on an unverified assumption about what
-      marks a Gmail-injected row.
-- [ ] README says "no guests, no RSVP, no tasks, no reminders, no goals" one
-      paragraph away from a full reminder subsystem. It means Google's
-      *Reminders entity*; a reader will not parse that. One clause fixes it.
-- [ ] APPEARANCE rows render and do nothing. Hide them until a second theme
-      exists, or render them visibly disabled.
+      marks a Gmail-injected row. (The filter itself is now wired —
+      `hideAutoAdded` drives `AutoAddedDetector` at every instance-consumption
+      site — but the assumption under it is still untested against real
+      DAVx⁵ data.)
+- [x] README says "no guests, no RSVP, no tasks, no reminders, no goals" one
+      paragraph away from a full reminder subsystem. ~~It means Google's
+      *Reminders* entity; a reader will not parse that.~~ Fixed: the sentence
+      now names Google's Reminders entity explicitly and points at the local
+      reminder alarms as the different thing they are.
+- [x] APPEARANCE rows render and do nothing. ~~Hide them until a second theme
+      exists, or render them visibly disabled.~~ Superseded by review P0 #4's
+      full pass: every visible Settings row now controls behavior; the rows
+      that could not be honestly wired (`dimPast`, `dailyAgenda`, and the
+      single-valued `background`/`font` pickers) are hidden, their keys still
+      persist and round-trip through backup.

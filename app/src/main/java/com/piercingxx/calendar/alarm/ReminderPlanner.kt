@@ -1,5 +1,11 @@
 package com.piercingxx.calendar.alarm
 
+import com.piercingxx.calendar.settings.AllDayNotification
+import java.time.Instant
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
+
 /**
  * One concrete reminder alarm. Pure data, no android imports (design §4.3:
  * the planner is a pure JVM object so the whole desired-set computation is
@@ -54,12 +60,15 @@ data class Plan(
  *   user has not put a reminder on (pending WS9 settings may add defaults).
  * - Timed instances: one alarm per distinct reminder row,
  *   `triggerAt = start - minutes * 60_000`.
- * - All-day instances: every reminder row maps to the SAME canonical lead of
- *   [ALL_DAY_LEAD_MILLIS] before start (`start - 18h`), regardless of the
- *   stored minutes value. Rationale: provider minutes are tuned for timed
- *   events ("30 min before 14:00"), which is meaningless for a local-midnight
- *   start; the brief pins the implementation at an 18h lead pending WS9
- *   settings. Duplicate rows collapse through Set equality.
+ * - All-day instances: every reminder row maps to the SAME canonical anchor,
+ *   regardless of the stored minutes value. Rationale: provider minutes are
+ *   tuned for timed events ("30 min before 14:00"), which is meaningless for
+ *   a local-midnight start. The anchor is §8.6's all-day notification policy:
+ *   fire at `hourOfDay`:00 local, [AllDayNotification.daysBefore] days before
+ *   the event's first day. When no policy is configured (tests, or before the
+ *   app has mirrored the setting), the historical fixed lead of
+ *   [ALL_DAY_LEAD_MILLIS] applies. Duplicate rows collapse through Set
+ *   equality.
  * - Past is skipped entirely, NO grace window: any trigger with
  *   `triggerAt <= nowMillis` is dropped. An event that started two minutes
  *   ago does not fire a late "you are now late" buzz (design §10 quiet bias);
@@ -69,22 +78,79 @@ data class Plan(
  */
 object ReminderPlanner {
 
-    /** Canonical pre-notification lead for all-day instances: 18h. See class doc. */
+    /**
+     * Historical all-day lead: 18h before start. Still the anchor whenever no
+     * §8.6 policy has been mirrored into [allDayPolicy] (unit tests, or the
+     * window before MainActivity's first settings emission).
+     */
     const val ALL_DAY_LEAD_MILLIS: Long = 18L * 60L * 60L * 1000L
 
     private const val MINUTE_MILLIS: Long = 60_000L
 
+    /** All-day events are stored at UTC midnight; their calendar date reads in UTC. */
+    private val ALL_DAY_STORAGE_ZONE: ZoneId = ZoneId.of("UTC")
+
     /**
-     * The desired set over [instances] as of [nowMillis]. Only strictly
+     * Process-wide mirror of §8.6's `allDayNotification`. The reconciler's
+     * call path is outside this workstream's write scope and reaches plan()
+     * through this two-arg form, so MainActivity writes the user's setting
+     * here on every emission (and triggers a re-reconcile). Null = legacy
+     * fixed [ALL_DAY_LEAD_MILLIS] behaviour.
+     */
+    @Volatile
+    var allDayPolicy: AllDayNotification? = null
+
+    /**
+     * When an all-day instance starting at [startMillis] should fire, per
+     * [policy]: `hourOfDay`:00 local in [zone], [AllDayNotification.daysBefore]
+     * days before the event's (UTC-read) first day. Out-of-range policy fields
+     * clamp rather than throwing — a hand-edited backup must not crash the
+     * alarm pass.
+     */
+    internal fun allDayTriggerAtMillis(
+        startMillis: Long,
+        policy: AllDayNotification,
+        zone: ZoneId,
+    ): Long {
+        val eventDate = Instant.ofEpochMilli(startMillis)
+            .atZone(ALL_DAY_STORAGE_ZONE)
+            .toLocalDate()
+        val hour = policy.hourOfDay.coerceIn(0, 23)
+        val daysBefore = policy.daysBefore.coerceIn(0, 365)
+        return ZonedDateTime.of(eventDate.minusDays(daysBefore.toLong()), LocalTime.of(hour, 0), zone)
+            .toInstant()
+            .toEpochMilli()
+    }
+
+    /**
+     * The desired set over [instances] as of [nowMillis], under the mirrored
+     * [allDayPolicy] (or the historical fixed lead when none). Only strictly
      * future triggers survive.
      */
-    fun plan(instances: List<PlannerInstance>, nowMillis: Long): Set<AlarmKey> {
+    fun plan(instances: List<PlannerInstance>, nowMillis: Long): Set<AlarmKey> =
+        plan(instances, nowMillis, allDayPolicy, ZoneId.systemDefault())
+
+    /**
+     * Same computation with the §8.6 all-day policy supplied explicitly:
+     * [policy] == null restores the fixed [ALL_DAY_LEAD_MILLIS] lead, so the
+     * pure-JVM suite stays zone-independent.
+     */
+    fun plan(
+        instances: List<PlannerInstance>,
+        nowMillis: Long,
+        policy: AllDayNotification?,
+        zone: ZoneId,
+    ): Set<AlarmKey> {
         val out = sortedSetOf<AlarmKey>()
         for (instance in instances) {
             if (instance.declined) continue
             if (instance.reminderMinutes.isEmpty()) continue
             if (instance.allDay) {
-                val triggerAt = instance.startMillis - ALL_DAY_LEAD_MILLIS
+                val triggerAt = if (policy != null) {
+                    allDayTriggerAtMillis(instance.startMillis, policy, zone)
+                } else {
+                    instance.startMillis - ALL_DAY_LEAD_MILLIS
+                }
                 if (triggerAt > nowMillis) {
                     out.add(AlarmKey(instance.eventId, instance.startMillis, triggerAt))
                 }

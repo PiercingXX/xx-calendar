@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API &lt;31 full-backup rules (android:fullBackupContent).
+
+     Same decision as data_extraction_rules.xml: the app stores only
+     non-sensitive preferences, so platform defaults apply — no
+     include/exclude entries means Auto Backup behaves per default
+     (almost everything, minus its own default exclusions).
+     Inert while android:allowBackup="false"; kept for API 26-30 parity
+     if backup is ever enabled. -->
+<full-backup-content>
+</full-backup-content>

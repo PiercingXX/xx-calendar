@@ -291,6 +291,74 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
         assertNull(eventSnapshot(parent))
     }
 
+    // ------------------------- interaction: delete-this then split keeps exclusions
+
+    /**
+     * The §6.3 composition hazard: a this-instance delete lives in the
+     * parent's EXDATE string (not an exception row), so a later "this and
+     * following" split must carry it onto the continuation — otherwise the
+     * previously deleted occurrence resurrects in the tail.
+     */
+    @Test
+    fun delete_thisInstance_then_split_thisAndFollowing_moves_exdate_onto_the_continuation() =
+        runBlocking {
+            // Never-ended twin: COUNT-bounded series may not be split (KDoc).
+            val parent = dailySeries("FREQ=DAILY")
+            val third = seriesStart + 2 * dayMillis
+            val fifth = seriesStart + 4 * dayMillis
+
+            // 1) Delete occurrence #5 through the provider — instance-uri
+            //    delete; CalendarProvider2 writes EXDATE on the parent row.
+            val deleteResolution = ScopeResolver.resolveDelete(
+                contextOf(parent),
+                RecurrenceScope.ThisInstance,
+                InstanceRef(parent, fifth),
+            )
+            assertTrue(
+                "expected DeleteInstanceUri, got $deleteResolution",
+                deleteResolution is Resolution.DeleteInstanceUri,
+            )
+            editor().apply(deleteResolution)
+            assertNotNull(
+                "provider wrote no EXDATE for the deleted instance",
+                eventSnapshot(parent)!!.exdate,
+            )
+
+            // 2) Edit occurrence #3 with "this and following".
+            val splitResolution = ScopeResolver.resolveEdit(
+                contextOf(parent),
+                RecurrenceScope.ThisAndFollowing,
+                InstanceRef(parent, third),
+                EventFieldEdits(title = "renamed tail"),
+            )
+            assertTrue(
+                "expected SplitParent, got $splitResolution",
+                splitResolution is Resolution.SplitParent,
+            )
+            val outcome = editor().apply(splitResolution)
+            val tailId = (outcome as RecurrenceEditor.Outcome.Written).touchedEventId!!
+
+            // 3) The exclusion rides on the CONTINUATION now, so #5 stays gone.
+            val tail = eventSnapshot(tailId)!!
+            assertEquals(third, tail.dtstart)
+            assertNotNull("continuation lost the deleted-instance exclusion", tail.exdate)
+            assertTrue(
+                "continuation EXDATE '${tail.exdate}' does not cover $fifth",
+                exdateCovers(tail.exdate, fifth),
+            )
+            assertFalse(
+                "stale exclusion lingered on the truncated parent",
+                exdateCovers(eventSnapshot(parent)!!.exdate, fifth),
+            )
+
+            // 4) Instance view: #5 absent everywhere; the cut at #3 stays clean.
+            val expanded = occurrences(1, 30)
+            assertTrue(expanded.none { it.startMillis == fifth })
+            assertTrue(expanded.none { it.eventId == parent && it.startMillis >= third })
+            assertTrue(expanded.any { it.eventId == parent && it.startMillis == seriesStart })
+            assertTrue(expanded.any { it.eventId == tailId && it.startMillis == third })
+        }
+
     // ------------------------------------------------------------------ helpers
 
     /**

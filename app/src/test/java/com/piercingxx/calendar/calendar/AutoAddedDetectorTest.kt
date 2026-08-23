@@ -28,33 +28,12 @@ class AutoAddedDetectorTest {
         isWritable = true,
     )
 
-    private fun instance() = CalendarInstance(
-        eventId = 10L,
-        calendarId = 1L,
-        title = "Dinner with mum",
-        location = null,
-        description = null,
-        startMillis = Fixtures.utc(2026, 8, 24, 18, 30),
-        endMillis = Fixtures.utc(2026, 8, 24, 19, 45),
-        allDay = false,
-        eventTimezone = "UTC",
-        eventEndTimezone = null,
-        rrule = null,
-        duration = null,
-        availability = CalendarInstanceCopy.availabilityBusy,
-        status = CalendarInstanceCopy.statusConfirmed,
-        originalId = null,
-        originalInstanceTime = null,
-        selfAttendeeStatus = 0,
-    )
-
     // ------------------------------------------------------- stage 1 fires
 
     @Test
     fun `fires on google group-v calendar account name`() {
         assertTrue(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(accountName = "en.uk.holiday@group.v.calendar.google.com"),
             ),
         )
@@ -64,7 +43,6 @@ class AutoAddedDetectorTest {
     fun `fires on holidays display name regardless of case`() {
         assertTrue(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(displayName = "Holidays in Germany"),
             ),
         )
@@ -74,7 +52,6 @@ class AutoAddedDetectorTest {
     fun `fires on birthdays display name`() {
         assertTrue(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(displayName = "Birthdays"),
             ),
         )
@@ -86,7 +63,6 @@ class AutoAddedDetectorTest {
     fun `fires on calendar-render booking url`() {
         assertTrue(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(),
                 AutoAddedDetector.Metadata(url = "https://www.googlemail.com/calendar-render?action=TEMPLATE&eid=xyz"),
             ),
@@ -97,7 +73,6 @@ class AutoAddedDetectorTest {
     fun `fires on non-null custom app package`() {
         assertTrue(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(),
                 AutoAddedDetector.Metadata(customAppPackage = "com.google.android.apps.meetings"),
             ),
@@ -108,7 +83,6 @@ class AutoAddedDetectorTest {
     fun `blank custom app package does not fire`() {
         assertFalse(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(),
                 AutoAddedDetector.Metadata(customAppPackage = "  "),
             ),
@@ -120,7 +94,7 @@ class AutoAddedDetectorTest {
     @Test
     fun `ordinary event on an ordinary personal calendar fails closed`() {
         assertFalse(
-            AutoAddedDetector.isLikelyAutoAdded(instance(), calendar(), AutoAddedDetector.Metadata()),
+            AutoAddedDetector.isLikelyAutoAdded(calendar(), AutoAddedDetector.Metadata()),
         )
     }
 
@@ -128,7 +102,6 @@ class AutoAddedDetectorTest {
     fun `unknown account type with no metadata fails closed`() {
         assertFalse(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(accountName = "home@local", accountType = "LOCAL", displayName = "Family"),
             ),
         )
@@ -136,29 +109,17 @@ class AutoAddedDetectorTest {
 
     @Test
     fun `missing calendar fails closed`() {
-        assertFalse(AutoAddedDetector.isLikelyAutoAdded(instance(), null))
+        assertFalse(AutoAddedDetector.isLikelyAutoAdded(null))
     }
 
     @Test
     fun `unrelated url fails closed`() {
         assertFalse(
             AutoAddedDetector.isLikelyAutoAdded(
-                instance(),
                 calendar(),
                 AutoAddedDetector.Metadata(url = "https://meet.example.org/room/123"),
             ),
         )
     }
-
-    @Test
-    fun `title alone never fires — titles are not evidence`() {
-        val suspiciousTitle = instance().copy(title = "Flight UA234 SFO->FRA")
-        assertFalse(AutoAddedDetector.isLikelyAutoAdded(suspiciousTitle, calendar()))
-    }
 }
 
-/** Indirection so fixtures can reference provider constants without imports noise. */
-private object CalendarInstanceCopy {
-    const val availabilityBusy = 0
-    const val statusConfirmed = 1
-}

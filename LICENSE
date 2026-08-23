@@ -14,3 +14,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Third-party assets: the bundled fonts JetBrains Mono and Space Mono (under
+app/src/main/res/font/) are NOT covered by the above; they are licensed under
+the SIL Open Font License, Version 1.1 — see NOTICE and third-party/OFL.txt.

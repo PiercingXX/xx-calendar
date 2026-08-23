@@ -63,16 +63,17 @@ data class MonthDayCell(
  */
 @Composable
 internal fun MonthGrid(
-    weeks: List<List<MonthDayCell>>,
     showWeekNumbers: Boolean,
+    firstDayOfWeek: DayOfWeek,
     today: LocalDate,
     selected: LocalDate?,
     tiersByCalendarId: Map<Long, SigilTier>,
     onSelect: (LocalDate) -> Unit,
+    weeks: List<List<MonthDayCell>>,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
-        WeekdayHeaderRow(showWeekNumbers)
+        WeekdayHeaderRow(showWeekNumbers, firstDayOfWeek)
         weeks.forEachIndexed { weekIndex, week ->
             WeekRow(
                 week = week,
@@ -89,7 +90,7 @@ internal fun MonthGrid(
 }
 
 @Composable
-private fun WeekdayHeaderRow(showWeekNumbers: Boolean) {
+private fun WeekdayHeaderRow(showWeekNumbers: Boolean, firstDayOfWeek: DayOfWeek) {
     val colors = LocalCalendarColors.current
     Row(modifier = Modifier.fillMaxWidth()) {
         if (showWeekNumbers) {
@@ -97,7 +98,7 @@ private fun WeekdayHeaderRow(showWeekNumbers: Boolean) {
         }
         repeat(DAYS_PER_WEEK) { column ->
             Text(
-                weekdayLabel(column),
+                weekdayLabel(column, firstDayOfWeek),
                 style = Label,
                 color = colors.muted,
                 textAlign = TextAlign.Start,
@@ -109,11 +110,9 @@ private fun WeekdayHeaderRow(showWeekNumbers: Boolean) {
     }
 }
 
-/** Column index -> locale-correct weekday abbreviation, first-day-of-week aware. */
-private fun weekdayLabel(column: Int): String {
-    val firstDowIso =
-        WeekFields.of(Locale.getDefault()).firstDayOfWeek.get(java.time.temporal.ChronoField.DAY_OF_WEEK)
-    val day = DayOfWeek.of(firstDowIso).plus(column.toLong())
+/** Column index -> weekday abbreviation, §8.6 start-day-of-week aware. */
+internal fun weekdayLabel(column: Int, firstDayOfWeek: DayOfWeek): String {
+    val day = firstDayOfWeek.plus(column.toLong())
     return day.getDisplayName(TextStyle.SHORT, Locale.getDefault())
         .uppercase(Locale.getDefault())
 }

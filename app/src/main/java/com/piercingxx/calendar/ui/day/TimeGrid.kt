@@ -201,7 +201,6 @@ fun TimeGrid(
                             pxPerMinute = pxPerMinute,
                             sigils = sigils,
                             calendarsById = calendarsById,
-                            zone = zone,
                             preview = preview?.takeIf { it.date == column.date || it is GesturePreview.Transform },
                             onPreview = { preview = it },
                             onCreateSlot = { startMinute, endMinute ->
@@ -273,7 +272,6 @@ private fun DayColumn(
     pxPerMinute: Float,
     sigils: Map<CalendarKey, SigilTier>,
     calendarsById: Map<Long, CalendarSummary>,
-    zone: ZoneId,
     preview: GesturePreview?,
     onPreview: (GesturePreview?) -> Unit,
     onCreateSlot: (Int, Int) -> Unit,
@@ -338,7 +336,6 @@ private fun DayColumn(
                 pxPerMinute = pxPerMinute,
                 tier = tierOf(block.instance.calendarId, sigils, calendarsById),
                 past = block.instance.endMillis < System.currentTimeMillis(),
-                zone = zone,
                 onPreview = onPreview,
                 onTransformFinished = onTransformFinished,
                 onClick = { onEventClick(block.instance.eventId) },
@@ -354,7 +351,6 @@ private fun DayColumn(
                 heightDp = with(density) {
                     ((ghost.endMinute - ghost.startMinute) * pxPerMinute).coerceAtLeast(minBlockPx).toDp()
                 },
-                zone = zone,
             )
         }
     }
@@ -370,7 +366,6 @@ private fun EventCell(
     pxPerMinute: Float,
     tier: SigilTier?,
     past: Boolean,
-    zone: ZoneId,
     onPreview: (GesturePreview?) -> Unit,
     onTransformFinished: (CalendarInstance, Int, Int) -> Unit,
     onClick: () -> Unit,
@@ -440,7 +435,7 @@ private fun EventCell(
             )
             if ((block.endMinute - block.startMinute).toInt() >= TIME_TEXT_MIN_MINUTES) {
                 Text(
-                    timeRangeText(block.startMinute.toInt(), block.endMinute.toInt(), zone),
+                    timeRangeText(block.startMinute.toInt(), block.endMinute.toInt()),
                     style = Time,
                     color = if (past) colors.shade else colors.muted,
                     maxLines = 1,
@@ -540,7 +535,6 @@ private fun GhostCell(
     width: Dp,
     offsetYPx: Float,
     heightDp: Dp,
-    zone: ZoneId,
 ) {
     val colors = LocalCalendarColors.current
     Box(
@@ -553,7 +547,7 @@ private fun GhostCell(
             .padding(start = 8.dp, top = 2.dp),
     ) {
         Text(
-            timeRangeText(startMinute, endMinute, zone),
+            timeRangeText(startMinute, endMinute),
             style = Time,
             color = colors.muted,
             maxLines = 1,
@@ -718,7 +712,9 @@ internal fun SigilTier.rampColor(colors: CalendarColors): Color = when (rampName
 internal fun titleOf(instance: CalendarInstance): String =
     instance.title?.takeIf { it.isNotBlank() } ?: "(untitled)"
 
-internal fun timeRangeText(startMinute: Int, endMinute: Int, zone: ZoneId): String {
+// `zone` was dropped: callers pass display minutes already resolved against a
+// zone, so formatting is pure minute arithmetic (was an unused parameter).
+internal fun timeRangeText(startMinute: Int, endMinute: Int): String {
     fun hhmm(minute: Int): String = "%02d:%02d".format(minute / 60 % 24, minute % 60)
     return "${hhmm(startMinute)} – ${hhmm(endMinute)}"
 }

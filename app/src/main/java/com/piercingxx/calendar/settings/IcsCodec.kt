@@ -1,5 +1,13 @@
 package com.piercingxx.calendar.settings
 
+import android.content.ContentResolver
+import android.content.ContentUris
+import android.content.ContentValues
+import android.provider.CalendarContract.Events
+import android.provider.CalendarContract.Reminders
+import com.piercingxx.calendar.calendar.intOr
+import com.piercingxx.calendar.calendar.longOr
+import com.piercingxx.calendar.calendar.stringOr
 import com.piercingxx.calendar.core.RRuleModel
 import com.piercingxx.calendar.core.RuleParse
 import com.piercingxx.calendar.core.TimeMath
@@ -16,8 +24,10 @@ import java.time.format.ResolverStyle
 import java.util.Locale
 
 /**
- * The RFC 5545 subset XX-Calendar exchanges (design §9). Pure JVM — no Android
- * dependency — so the round-trip is unit-testable without a provider.
+ * The RFC 5545 subset XX-Calendar exchanges (design §9). The [IcsCodec] object
+ * itself is pure JVM — no Android dependency — so the round-trip is
+ * unit-testable without a provider; the provider-coupled half of the exchange
+ * lives in [IcsExchange] at the bottom of this file.
  *
  * Exported per VEVENT: UID, DTSTAMP, DTSTART/DTEND (date or datetime forms;
  * all-day = VALUE=DATE over UTC-midnight storage via [TimeMath]), DURATION when
@@ -44,6 +54,15 @@ object IcsCodec {
     fun uidOf(eventId: Long, calendarId: Long): String = "$eventId-$calendarId@$UID_DOMAIN"
 
     /**
+     * Export identity (§9): the row's real UID_2445 whenever the provider
+     * carries one — so Google/DAVx⁵-sourced events keep their server UID and
+     * export→import round-trips dedupe against the stored-UID set — falling
+     * back to the synthetic [uidOf] only for rows that never had one.
+     */
+    private fun uidFor(event: IcsEvent): String =
+        event.uid?.takeIf { it.isNotBlank() } ?: uidOf(event.eventId, event.calendarId)
+
+    /**
      * One event to export — CalendarInstance/EventDraft-shaped plus reminder
      * minutes. [status] is a CalendarContract STATUS int, null when unknown
      * (the STATUS line is then omitted). [availability] is a CalendarContract
@@ -53,6 +72,13 @@ object IcsCodec {
     data class IcsEvent(
         val eventId: Long,
         val calendarId: Long,
+
+        /**
+         * The row's stored UID_2445, read back from the provider (§9 duplicate
+         * detection). Null when the row carries none — export then falls back
+         * to the synthetic [uidOf] identity.
+         */
+        val uid: String? = null,
         val title: String?,
         val startMillis: Long,
         val endMillis: Long?,
@@ -113,7 +139,7 @@ object IcsCodec {
             line("CALSCALE:GREGORIAN")
             for (event in events) {
                 line("BEGIN:VEVENT")
-                line("UID:${uidOf(event.eventId, event.calendarId)}")
+                line("UID:${uidFor(event)}")
                 line("DTSTAMP:$stamp")
                 emitWhen(event)
                 event.title?.let { textLine("SUMMARY", it) }
@@ -125,7 +151,7 @@ object IcsCodec {
                 event.rdate?.takeIf { it.isNotBlank() }?.let { rawLine("RDATE", it.trim()) }
                 event.exdate?.takeIf { it.isNotBlank() }?.let { rawLine("EXDATE", it.trim()) }
                 statusName(event.status)?.let { rawLine("STATUS", it) }
-                transpName(event.availability)?.let { rawLine("TRANSP", it) }
+                rawLine("TRANSP", transpName(event.availability))
                 event.reminderMinutes
                     .distinct()
                     .sorted()
@@ -331,7 +357,7 @@ object IcsCodec {
         if (zone == null || zone == ZoneOffset.UTC) {
             line("$name:${UTC_DATETIME_FORMAT.format(instant)}")
         } else {
-            line("$name;TZID=${paramToken(timezone!!)}:${LOCAL_DATETIME_FORMAT.format(instant.atZone(zone))}")
+            line("$name;TZID=${paramToken(timezone)}:${LOCAL_DATETIME_FORMAT.format(instant.atZone(zone))}")
         }
     }
 
@@ -625,4 +651,175 @@ object IcsCodec {
     /** Reads the RFC 5545 DATE-TIME basic form ("20260302T090000"). */
     private val BASIC_DATETIME_PARSE_FORMAT: DateTimeFormatter =
         DateTimeFormatter.ofPattern("uuuuMMdd'T'HHmmss").withResolverStyle(ResolverStyle.STRICT)
+}
+
+/**
+ * The provider-coupled half of §9 exchange: reading event rows for export
+ * (projection carries UID_2445 so [IcsCodec] can emit the real identity),
+ * reading stored UIDs for import deduplication, and inserting parsed drafts
+ * with their VEVENT UID written into UID_2445.
+ *
+ * That last write is what closes the duplicate loop (P0 #5): a file imported
+ * twice is skipped the second time because the first pass left its UIDs in
+ * the store that [knownUids] reads back. UID_2445 is written on INSERT only —
+ * it never rides through [com.piercingxx.calendar.calendar.OpaqueColumns]
+ * held values, whose NON_PRESERVED_COLUMNS contract (sync-adapter-owned
+ * identity must not be rewritten by the editor) stays untouched: later saves
+ * preserve the column by absence, exactly as before. Whether the real
+ * CalendarProvider2 accepts UID_2445 from a normal client on insert must be
+ * verified on device; if it refuses, fall back to a local UID→eventId map.
+ *
+ * All writes go through the resolver as a NORMAL CLIENT — no
+ * CALLER_IS_SYNCADAPTER parameter, matching CalendarRepository (§4.1).
+ */
+object IcsExchange {
+
+    /** Export projection — deliberately carries UID_2445 (§9) and STATUS. */
+    private val EVENT_PROJECTION = arrayOf(
+        Events._ID,
+        Events.CALENDAR_ID,
+        Events.TITLE,
+        Events.DTSTART,
+        Events.DTEND,
+        Events.ALL_DAY,
+        Events.EVENT_TIMEZONE,
+        Events.EVENT_END_TIMEZONE,
+        Events.EVENT_LOCATION,
+        Events.DESCRIPTION,
+        Events.RRULE,
+        Events.DURATION,
+        Events.RDATE,
+        Events.EXDATE,
+        Events.AVAILABILITY,
+        Events.STATUS,
+        Events.ORIGINAL_ID,
+        Events.UID_2445,
+    )
+
+    private val REMINDER_PROJECTION = arrayOf(Reminders.EVENT_ID, Reminders.MINUTES)
+
+    /** CalendarContract.Events.AVAILABILITY_BUSY — rows default to it when null. */
+    private const val AVAILABILITY_BUSY = 0
+
+    /** UIDs already in the store — the caller-supplied set for [IcsCodec.parse]. */
+    fun knownUids(resolver: ContentResolver): Set<String> = buildSet {
+        resolver.query(Events.CONTENT_URI, arrayOf(Events.UID_2445), null, null, null)
+            ?.use { cursor ->
+                val column = cursor.getColumnIndexOrThrow(Events.UID_2445)
+                while (cursor.moveToNext()) {
+                    cursor.getString(column)?.takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+    }
+
+    /**
+     * Every exportable row as an [IcsCodec.IcsEvent], reminders attached.
+     * Exception rows (ORIGINAL_ID set) are skipped — the codec does not model
+     * them; filtering happens client-side so any provider works.
+     */
+    fun collectExportEvents(resolver: ContentResolver): List<IcsCodec.IcsEvent> {
+        val reminders = HashMap<Long, MutableList<Int>>()
+        resolver.query(Reminders.CONTENT_URI, REMINDER_PROJECTION, null, null, null)?.use { c ->
+            val idCol = c.getColumnIndexOrThrow(Reminders.EVENT_ID)
+            val minutesCol = c.getColumnIndexOrThrow(Reminders.MINUTES)
+            while (c.moveToNext()) {
+                reminders.getOrPut(c.getLong(idCol)) { mutableListOf() }
+                    .add(c.getInt(minutesCol))
+            }
+        }
+        return resolver.query(Events.CONTENT_URI, EVENT_PROJECTION, null, null, null)
+            ?.use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        if (c.longOr(Events.ORIGINAL_ID) != null) continue
+                        add(
+                            IcsCodec.IcsEvent(
+                                eventId = requireNotNull(c.longOr(Events._ID)) { "event without _id" },
+                                calendarId = requireNotNull(c.longOr(Events.CALENDAR_ID)) {
+                                    "event without CALENDAR_ID"
+                                },
+                                uid = c.stringOr(Events.UID_2445),
+                                title = c.stringOr(Events.TITLE),
+                                startMillis = c.longOr(Events.DTSTART) ?: 0L,
+                                endMillis = if (c.stringOr(Events.DURATION).isNullOrBlank()) {
+                                    c.longOr(Events.DTEND)
+                                } else {
+                                    null // DURATION owns the extent; never both (provider contract)
+                                },
+                                allDay = c.intOr(Events.ALL_DAY) == 1,
+                                eventTimezone = c.stringOr(Events.EVENT_TIMEZONE),
+                                eventEndTimezone = c.stringOr(Events.EVENT_END_TIMEZONE),
+                                location = c.stringOr(Events.EVENT_LOCATION),
+                                description = c.stringOr(Events.DESCRIPTION),
+                                rrule = c.stringOr(Events.RRULE),
+                                duration = c.stringOr(Events.DURATION),
+                                rdate = c.stringOr(Events.RDATE),
+                                exdate = c.stringOr(Events.EXDATE),
+                                availability = c.intOr(Events.AVAILABILITY)
+                                    ?: AVAILABILITY_BUSY,
+                                status = c.intOr(Events.STATUS),
+                                reminderMinutes = reminders[c.longOr(Events._ID)] ?: emptyList(),
+                            ),
+                        )
+                    }
+                }
+            }
+            ?: emptyList()
+    }
+
+    /**
+     * Inserts parsed drafts into one calendar, writing each draft's UID into
+     * UID_2445 when the VEVENT carried one (a file without UID lines imports
+     * exactly as before — no synthetic identity is invented here). Reminders
+     * ride along as METHOD_ALERT rows. Returns the count inserted.
+     */
+    fun insertDrafts(
+        resolver: ContentResolver,
+        calendarId: Long,
+        drafts: List<IcsCodec.IcsEventDraft>,
+    ): Int {
+        var inserted = 0
+        for (draft in drafts) {
+            val values = ContentValues().apply {
+                put(Events.CALENDAR_ID, calendarId)
+                put(Events.DTSTART, draft.startMillis)
+                // Recurring events carry DURATION instead of DTEND per RFC 5545 / provider contract.
+                if (draft.duration != null) {
+                    put(Events.DURATION, draft.duration)
+                } else if (draft.endMillis != null) {
+                    put(Events.DTEND, draft.endMillis)
+                }
+                put(Events.ALL_DAY, if (draft.allDay) 1 else 0)
+                put(Events.EVENT_TIMEZONE, draft.eventTimezone ?: "UTC")
+                put(Events.AVAILABILITY, draft.availability)
+                put(Events.TITLE, draft.title)
+                put(Events.EVENT_LOCATION, draft.location)
+                put(Events.DESCRIPTION, draft.description)
+                put(Events.EVENT_END_TIMEZONE, draft.eventEndTimezone)
+                put(Events.RRULE, draft.rrule)
+                put(Events.RDATE, draft.rdate)
+                put(Events.EXDATE, draft.exdate)
+                if (!draft.uid.isBlank()) put(Events.UID_2445, draft.uid)
+            }
+            val uri = resolver.insert(Events.CONTENT_URI, values)
+                // The provider has no transactional import: rows already
+                // written stay. Say how many, so the failure toast can tell
+                // the user the import is partial rather than absent.
+                ?: error(
+                    "provider refused event insert — " +
+                        "$inserted of ${drafts.size} events were imported before the failure",
+                )
+            val eventId = ContentUris.parseId(uri)
+            for (minutes in draft.reminderMinutes.distinct().sorted()) {
+                val reminder = ContentValues().apply {
+                    put(Reminders.EVENT_ID, eventId)
+                    put(Reminders.MINUTES, minutes)
+                    put(Reminders.METHOD, Reminders.METHOD_ALERT)
+                }
+                resolver.insert(Reminders.CONTENT_URI, reminder)
+            }
+            inserted += 1
+        }
+        return inserted
+    }
 }

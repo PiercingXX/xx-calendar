@@ -56,6 +56,11 @@ jobs:
       - name: Unit tests + debug APK
         run: ./gradlew --warning-mode all testDebugUnitTest assembleDebug
 
+      # Lint passes today (review P2); this keeps it that way. Same
+      # --warning-mode policy as above.
+      - name: Android lint
+        run: ./gradlew --warning-mode all lint
+
       - name: Compile instrumented suite (no device needed)
         run: ./gradlew --warning-mode all assembleDebugAndroidTest
 

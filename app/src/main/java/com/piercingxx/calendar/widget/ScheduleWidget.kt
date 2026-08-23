@@ -30,6 +30,7 @@ import androidx.glance.unit.ColorProvider
 import com.piercingxx.calendar.MainActivity
 import com.piercingxx.calendar.calendar.CalendarInstance
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.calendar.InstanceFilters
 import com.piercingxx.calendar.core.AgendaGrouping
 import com.piercingxx.calendar.core.InstanceSpan
 import com.piercingxx.calendar.core.SigilTier
@@ -131,11 +132,19 @@ private suspend fun loadSections(context: Context): List<WidgetSection> {
     val zone = ZoneId.systemDefault()
     val nowMillis = System.currentTimeMillis()
     val repository = CalendarRepository(context.contentResolver)
+    val appSettings = currentWidgetSettings(context)
+    val calendars = repository.calendars()
     val tiersByCalendarId =
-        sigilTiersByCalendarId(repository, SigilStore(context.applicationContext))
-    val accountNames = repository.calendars().associate { it.id to (it.accountName ?: "") }
+        sigilTiersByCalendarId(repository, SigilStore(context.applicationContext), calendars)
 
-    val instances = repository.instances(nowMillis, nowMillis + WINDOW_MILLIS)
+    // §8.6 consumption filters (declined / auto-added), same as the in-app views.
+    val instances = InstanceFilters.apply(
+        repository.instances(nowMillis, nowMillis + WINDOW_MILLIS),
+        showDeclined = appSettings.showDeclined,
+        hideAutoAdded = appSettings.hideAutoAdded,
+        autoAddedFilterMode = appSettings.autoAddedFilterMode,
+        calendarsById = calendars.associateBy { it.id },
+    )
     // Multi-day occurrences land in several buckets; key back to the row once.
     val byOccurrence = instances.associateBy { it.eventId to it.startMillis }
     return AgendaGrouping.group(

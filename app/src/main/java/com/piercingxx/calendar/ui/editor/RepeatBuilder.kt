@@ -389,7 +389,7 @@ private fun CustomRulePane(
 
 /** One-line summary of what "done" would store, in the same words as the row. */
 private fun preview(rule: RRuleModel): String = buildString {
-    append(repeatLabel(rule, unreadable = false, anchor = LocalDate.now()))
+    append(repeatLabel(rule, unreadable = false))
 }
 
 @Composable

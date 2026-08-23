@@ -1,0 +1,14 @@
+XX-Calendar
+Copyright (c) 2026 PiercingXX — all rights reserved (see LICENSE).
+
+Third-party software bundled with this application:
+
+* JetBrains Mono (res/font/jetbrains_mono_*.ttf)
+  Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono)
+  Licensed under the SIL Open Font License, Version 1.1 (third-party/OFL.txt).
+
+* Space Mono (res/font/space_mono_*.ttf)
+  Copyright 2016 The Space Mono Project Authors
+  (https://github.com/googlefonts/spacemono)
+  Licensed under the SIL Open Font License, Version 1.1 (third-party/OFL.txt).

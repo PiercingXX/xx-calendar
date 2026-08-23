@@ -3,6 +3,7 @@ package com.piercingxx.calendar.calendar
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.net.Uri
+import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Instances
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -18,7 +19,11 @@ import kotlinx.coroutines.withContext
  */
 object InstanceQuery {
 
-    const val DEFAULT_SORT_ORDER: String = "${Instances.DTSTART} ASC"
+    // Occurrence extent lives in BEGIN/END; DTSTART/DTEND are EventsColumns
+    // inherited verbatim onto every expanded row, so for a recurrence they
+    // carry the SERIES start/end on each occurrence — never read them as
+    // instance times.
+    const val DEFAULT_SORT_ORDER: String = "${Instances.BEGIN} ASC"
 
     private val PROJECTION = arrayOf(
         Instances.EVENT_ID,
@@ -26,8 +31,8 @@ object InstanceQuery {
         Instances.TITLE,
         Instances.EVENT_LOCATION,
         Instances.DESCRIPTION,
-        Instances.DTSTART,
-        Instances.DTEND,
+        Instances.BEGIN,
+        Instances.END,
         Instances.ALL_DAY,
         Instances.EVENT_TIMEZONE,
         Instances.EVENT_END_TIMEZONE,
@@ -52,14 +57,22 @@ object InstanceQuery {
         val to = Math.addExact(endMillis, marginMillis)
 
         // Range is encoded in the URI path per CalendarContract.Instances docs;
-        // no selection, so the provider's expansion owns the filtering.
+        // the provider's expansion owns the range filtering, while the
+        // standard client filter (Calendars columns join onto the Instances
+        // URI) keeps hidden calendars out of every view.
         val uri: Uri = Instances.CONTENT_URI.buildUpon().also {
             ContentUris.appendId(it, from)
             ContentUris.appendId(it, to)
         }.build()
 
         val out = ArrayList<CalendarInstance>()
-        resolver.query(uri, PROJECTION, null, null, DEFAULT_SORT_ORDER)?.use { c ->
+        resolver.query(
+            uri,
+            PROJECTION,
+            "${Calendars.VISIBLE}=?",
+            arrayOf("1"),
+            DEFAULT_SORT_ORDER,
+        )?.use { c ->
             while (c.moveToNext()) out += c.toCalendarInstance()
         }
         out
@@ -72,10 +85,10 @@ private fun android.database.Cursor.toCalendarInstance(): CalendarInstance = Cal
     title = stringOr(Instances.TITLE),
     location = stringOr(Instances.EVENT_LOCATION),
     description = stringOr(Instances.DESCRIPTION),
-    startMillis = longOr(Instances.DTSTART) ?: 0L,
-    endMillis = longOr(Instances.DTEND) ?: longOr(Instances.BEGIN)?.let { begin ->
-        longOr(Instances.END)?.takeIf { it >= begin } ?: begin
-    } ?: 0L,
+    startMillis = longOr(Instances.BEGIN) ?: 0L,
+    // END is always present on instance rows: the provider derives it from
+    // DTEND or, for duration-based series rows, from DURATION.
+    endMillis = longOr(Instances.END) ?: 0L,
     allDay = boolOr(Instances.ALL_DAY) ?: false,
     eventTimezone = stringOr(Instances.EVENT_TIMEZONE),
     eventEndTimezone = stringOr(Instances.EVENT_END_TIMEZONE),

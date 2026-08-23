@@ -19,9 +19,12 @@ import kotlinx.coroutines.launch
  * extra names the desired background preset. When it matches a known
  * [AppBackground] value the choice is persisted to [SettingsStore]; anything
  * else — missing action, missing extra, unknown name, null anything — is
- * ignored silently. No network is touched and no assumption is made about the
- * sender beyond the action string; the receiver stays exported because the
- * sender is another app, not the system (manifest §12).
+ * ignored silently. No network is touched. The receiver stays exported because
+ * the sender is another app, not the system (manifest §12), but it is guarded
+ * by the signature-level `com.piercingxx.calendar.permission.THEME_SYNC`
+ * permission: only apps signed with the PiercingXX key that also hold the
+ * permission can deliver here — anything else has its broadcast silently
+ * dropped by the platform before onReceive runs.
  */
 class ThemeSyncReceiver : BroadcastReceiver() {
 

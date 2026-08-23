@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Local mirror of CI's R3 gate (design §11 / review P1): the repo's central
+# claim is that android.permission.INTERNET is never declared, and CI cannot
+# be trusted to enforce it while the billing failure stands. This hook makes
+# the gate exist somewhere before every push.
+#
+# Activated via: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+APK="app/build/outputs/apk/debug/app-debug.apk"
+
+if [ ! -f "$APK" ] || [ -n "$(find app/src app/build.gradle.kts -newer "$APK" -print -quit 2>/dev/null)" ]; then
+    echo "pre-push: debug APK missing or stale — building (./gradlew assembleDebug)…"
+    ./gradlew assembleDebug
+fi
+
+test -f "$APK"
+
+# Newest installed build-tools wins; ANDROID_HOME first, then sdk.dir from
+# local.properties for machines where only the SDK path is pinned.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+if [ -z "$SDK" ] && [ -f local.properties ]; then
+    SDK="$(sed -n 's/^sdk\.dir=//p' local.properties)"
+fi
+if [ -z "$SDK" ] || [ ! -d "$SDK/build-tools" ]; then
+    echo "pre-push: cannot locate an Android SDK (ANDROID_HOME/local.properties)." >&2
+    exit 1
+fi
+AAPT2="$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -n 1)aapt2"
+if [ ! -x "$AAPT2" ]; then
+    echo "pre-push: no aapt2 found under $SDK/build-tools — install build-tools via sdkmanager." >&2
+    exit 1
+fi
+echo "pre-push: using $AAPT2"
+
+PERMISSIONS="$("$AAPT2" dump permissions "$APK")"
+printf '%s\n' "$PERMISSIONS"
+
+if printf '%s\n' "$PERMISSIONS" | grep -q 'android.permission.INTERNET'; then
+    echo "pre-push: R3 VIOLATED — android.permission.INTERNET is declared in $APK." >&2
+    echo "pre-push: push rejected. The privacy claim is a build gate, not a promise." >&2
+    exit 1
+fi
+
+echo "pre-push: R3 gate passed — no INTERNET permission."

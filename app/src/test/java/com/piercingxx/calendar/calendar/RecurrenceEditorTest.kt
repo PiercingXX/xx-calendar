@@ -15,8 +15,10 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.time.Instant
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -375,6 +377,149 @@ class RecurrenceEditorTest {
         verify(exactly = 0) { resolver.update(any(), any(), any(), any()) }
     }
 
+    @Test
+    fun `splitParent after instance-uri deletes keeps every exclusion on its own side`() = runTest {
+        // Weekly Mondays at 14:00 UTC: #1 Aug 17 ... #5 Sep 14. The review
+        // repro: delete #5 (this instance), then split at #3 — #5 must stay
+        // deleted instead of resurrecting in the continuation.
+        val occ1 = instanceStart
+        val occ3 = instanceStart + 2 * 7 * 86_400_000L
+        val occ5 = instanceStart + 4 * 7 * 86_400_000L
+
+        var stored = recurringDraft
+        coEvery { repository.loadEvent(parentId) } answers { LoadedEvent(stored, opaque) }
+        coEvery {
+            repository.saveEvent(capture(savedDrafts), capture(savedOpaque))
+        } answers {
+            val saved = firstArg<EventDraft>()
+            if (saved.eventId != null) stored = saved // parent updates persist
+            1L
+        }
+
+        // Delete #5 then #1 the way ScopeResolver.resolveDelete routes them:
+        // an instance-uri DELETE. FakeCalendarProvider does not implement
+        // EXDATE-on-delete, so simulate CalendarProvider2 by appending to the
+        // parent's EXDATE string exactly what the real provider writes.
+        val deletedFive = editor.apply(Resolution.DeleteInstanceUri(parentId, occ5))
+        assertEquals(parentId, (deletedFive as RecurrenceEditor.Outcome.Written).touchedEventId)
+        stored = stored.copy(exdate = utcToken(occ5))
+        editor.apply(Resolution.DeleteInstanceUri(parentId, occ1))
+        stored = stored.copy(exdate = "${utcToken(occ5)},${utcToken(occ1)}")
+        savedDrafts.clear()
+        savedOpaque.clear()
+
+        val outcome = editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(occ3 - 1),
+                newRowStartMillis = occ3,
+                newRowEdits = EventFieldEdits(),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY),
+            ),
+        )
+        assertTrue(outcome is RecurrenceEditor.Outcome.Written)
+
+        assertEquals(2, savedDrafts.size)
+        val parentRow = savedDrafts[0]
+        assertEquals(parentId, parentRow.eventId)
+        // The pre-split exclusion (#1) stayed on the truncated parent…
+        assertEquals("FREQ=WEEKLY;BYDAY=MO;UNTIL=20260831T135959Z", parentRow.rrule)
+        assertEquals(utcToken(occ1), parentRow.exdate)
+        // …while #5's exclusion moved onto the CONTINUATION, so #5 stays gone.
+        val continuation = savedDrafts[1]
+        assertEquals(occ3, continuation.startMillis)
+        assertEquals("FREQ=WEEKLY", continuation.rrule)
+        assertEquals(null, continuation.rdate)
+        assertEquals(utcToken(occ5), continuation.exdate)
+    }
+
+    @Test
+    fun `splitParent partitions exdate and rdate tokens at the split boundary`() = runTest {
+        val before = instanceStart - 7 * 86_400_000L
+        val at = instanceStart
+        val after = instanceStart + 7 * 86_400_000L
+        coEvery { repository.loadEvent(parentId) } returns LoadedEvent(
+            recurringDraft.copy(
+                exdate = "${utcToken(before)},${utcToken(at)},${utcToken(after)}",
+                rdate = "${utcToken(before)},${utcToken(at)},${utcToken(after)}",
+            ),
+            opaque,
+        )
+
+        editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(instanceStart - 1),
+                newRowStartMillis = instanceStart,
+                newRowEdits = EventFieldEdits(),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY),
+            ),
+        )
+
+        // Strictly-before stays on the parent; at-or-after (the continuation's
+        // own first slot included) travels onto the new row — same >= boundary
+        // as migrateTailExceptions.
+        assertEquals(utcToken(before), savedDrafts[0].exdate)
+        assertEquals(utcToken(before), savedDrafts[0].rdate)
+        assertEquals("${utcToken(at)},${utcToken(after)}", savedDrafts[1].exdate)
+        assertEquals("${utcToken(at)},${utcToken(after)}", savedDrafts[1].rdate)
+    }
+
+    @Test
+    fun `splitParent partitions date-form exdate tokens on an all day series`() = runTest {
+        // All-day Mondays stored at UTC midnight (design §6.4); EXDATE in the
+        // DATE form some producers write for all-day series.
+        val mondayMidnight =
+            ZonedDateTime.of(2026, 8, 17, 0, 0, 0, 0, ZoneOffset.UTC).toInstant().toEpochMilli()
+        val thirdOccurrence = mondayMidnight + 14 * 86_400_000L // 2026-08-31
+        coEvery { repository.loadEvent(parentId) } returns LoadedEvent(
+            recurringDraft.copy(
+                startMillis = mondayMidnight,
+                duration = "P1D",
+                allDay = true,
+                exdate = "20260824,20260907",
+            ),
+            opaque,
+        )
+
+        editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(thirdOccurrence - 1, dateOnly = true),
+                newRowStartMillis = thirdOccurrence,
+                newRowEdits = EventFieldEdits(),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY),
+            ),
+        )
+
+        assertEquals("FREQ=WEEKLY;BYDAY=MO;UNTIL=20260830", savedDrafts[0].rrule)
+        assertEquals("20260824", savedDrafts[0].exdate)
+        assertEquals("20260907", savedDrafts[1].exdate)
+    }
+
+    @Test
+    fun `splitParent with blank exdate and rdate splits exactly as before`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns
+            LoadedEvent(recurringDraft.copy(exdate = "", rdate = ""), opaque)
+
+        editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(instanceStart - 1),
+                newRowStartMillis = instanceStart,
+                newRowEdits = EventFieldEdits(),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY),
+            ),
+        )
+
+        // Nothing to partition: both columns survive byte-identical on the
+        // parent and the continuation gains neither.
+        assertEquals("", savedDrafts[0].exdate)
+        assertEquals("", savedDrafts[0].rdate)
+        assertEquals(null, savedDrafts[1].exdate)
+        assertEquals(null, savedDrafts[1].rdate)
+    }
+
     // ---- Delete variants ---------------------------------------------------
 
     @Test
@@ -476,4 +621,10 @@ class RecurrenceEditorTest {
     ) {
         assertEquals(expected.values, actual.values)
     }
+
+    /** The UTC DATE-TIME token form CalendarProvider2 writes into EXDATE. */
+    private fun utcToken(millis: Long): String =
+        DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
+            .withZone(ZoneOffset.UTC)
+            .format(Instant.ofEpochMilli(millis))
 }

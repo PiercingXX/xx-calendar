@@ -1,12 +1,9 @@
 package com.piercingxx.calendar.ui.settings
 
 import android.content.ContentResolver
-import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.provider.CalendarContract
 import android.provider.Settings as SystemSettings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -53,12 +50,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.piercingxx.calendar.alarm.AlarmScheduler
 import com.piercingxx.calendar.calendar.CalendarRepository
 import com.piercingxx.calendar.calendar.CalendarSummary
-import com.piercingxx.calendar.calendar.EventDraft
 import com.piercingxx.calendar.core.CalendarKey
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.settings.AllDayNotification
-import com.piercingxx.calendar.settings.AppBackground
-import com.piercingxx.calendar.settings.AppFont
 import com.piercingxx.calendar.settings.AutoAddedFilterMode
 import com.piercingxx.calendar.settings.BackupJson
 import com.piercingxx.calendar.settings.BackupRead
@@ -66,6 +60,7 @@ import com.piercingxx.calendar.settings.BackupSnapshot
 import com.piercingxx.calendar.settings.DefaultView
 import com.piercingxx.calendar.settings.Density
 import com.piercingxx.calendar.settings.IcsCodec
+import com.piercingxx.calendar.settings.IcsExchange
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SigilStore
@@ -77,7 +72,6 @@ import com.piercingxx.calendar.ui.theme.Label
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
-import java.time.ZoneOffset
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -133,7 +127,7 @@ fun SettingsScreen() {
             scope.launch {
                 try {
                     val events = withContext(Dispatchers.IO) {
-                        collectExportEvents(repository)
+                        IcsExchange.collectExportEvents(appContext.contentResolver)
                     }
                     val bytes = IcsCodec.export(events)
                     withContext(Dispatchers.IO) {
@@ -164,7 +158,12 @@ fun SettingsScreen() {
                     val bytes = withContext(Dispatchers.IO) {
                         appContext.contentResolver.readBounded(uri, MAX_IMPORT_BYTES)
                     }
-                    val knownUids = withContext(Dispatchers.IO) { readKnownUids(appContext) }
+                    val knownUids = withContext(Dispatchers.IO) {
+                        // Graceful degradation preserved: if the UID read fails,
+                        // intra-file deduplication still applies.
+                        runCatching { IcsExchange.knownUids(appContext.contentResolver) }
+                            .getOrDefault(emptySet())
+                    }
                     val parsed = withContext(Dispatchers.IO) {
                         IcsCodec.parse(bytes, knownUids)
                     }
@@ -323,9 +322,9 @@ fun SettingsScreen() {
         ) {
             scope.launch { settingsStore.setShowDeclined(it) }
         }
-        CheckRow("dim past events", settings.dimPast) {
-            scope.launch { settingsStore.setDimPast(it) }
-        }
+        // dim past: row hidden — the time grids (TimeGrid.kt) still shade
+        // occurrences unconditionally, so the toggle cannot yet do what it
+        // says everywhere. The key keeps persisting for backup round-trips.
         ValueRow(
             label = "density",
             value = settings.density.displayName(),
@@ -362,17 +361,32 @@ fun SettingsScreen() {
         ValueRow(
             label = "all-day notification",
             value = allDayLabel(settings.allDayNotification),
+            onClick = {
+                // Cycle the shipped anchors: hour-of-day first, then the
+                // days-before step.
+                val i = ALL_DAY_PRESETS.indexOf(settings.allDayNotification)
+                val next = if (i < 0) {
+                    AllDayNotification()
+                } else {
+                    ALL_DAY_PRESETS[(i + 1) % ALL_DAY_PRESETS.size]
+                }
+                scope.launch { settingsStore.setAllDayNotification(next) }
+            },
         )
 
         // ------------------------------------------------- NOTIFICATIONS
 
         Section("NOTIFICATIONS")
-        CheckRow("show event title on lock screen", settings.lockScreenTitle) {
+        CheckRow(
+            "show event title on lock screen",
+            settings.lockScreenTitle,
+            annotation = "off, the lock screen shows only the time",
+        ) {
             scope.launch { settingsStore.setLockScreenTitle(it) }
         }
-        CheckRow("daily agenda", settings.dailyAgenda) {
-            scope.launch { settingsStore.setDailyAgenda(it) }
-        }
+        // daily agenda: row hidden — wiring it needs a whole daily digest
+        // scheduler that does not exist yet; a toggle with nothing behind it
+        // is exactly what this screen must not ship. The key persists.
         CheckRow("heads-up alerts", settings.headsUp) {
             scope.launch { settingsStore.setHeadsUp(it) }
         }
@@ -436,21 +450,18 @@ fun SettingsScreen() {
 
         // ----------------------------------------------------- APPEARANCE
 
-        // deferred: a single theme ships this wave (§7); rows render inert.
+        // background/font: rows hidden — one variant ships this wave (§7), so
+        // there is nothing for a control to switch; both keys persist.
         Section("APPEARANCE")
         ValueRow(
-            label = "background",
-            value = when (settings.background) {
-                AppBackground.AMOLED_NIGHT -> "amoled night"
+            label = "text size",
+            value = "${(settings.textSizeScale * 100).toInt()}%",
+            onClick = {
+                val i = TEXT_SIZE_STEPS.indexOf(settings.textSizeScale)
+                val next = if (i < 0) 1.0f else TEXT_SIZE_STEPS[(i + 1) % TEXT_SIZE_STEPS.size]
+                scope.launch { settingsStore.setTextSizeScale(next) }
             },
         )
-        ValueRow(
-            label = "font",
-            value = when (settings.font) {
-                AppFont.JETBRAINS_MONO -> "jetbrains mono"
-            },
-        )
-        ValueRow(label = "text size", value = "──────●───")
 
         // ----------------------------------------------------------- SYNC
 
@@ -548,7 +559,7 @@ fun SettingsScreen() {
                 scope.launch {
                     try {
                         val inserted = withContext(Dispatchers.IO) {
-                            runIcsImport(repository, appContext.contentResolver, calendarId, pending.drafts)
+                            IcsExchange.insertDrafts(appContext.contentResolver, calendarId, pending.drafts)
                         }
                         val notes = buildList {
                             add("$inserted imported")
@@ -788,6 +799,18 @@ private fun StartDayOfWeek.displayName(): String = name.lowercase(Locale.ROOT)
 
 private fun Density.displayName(): String = name.lowercase(Locale.ROOT)
 
+/** §8.6 all-day anchors the row cycles through: hour first, then days before. */
+private val ALL_DAY_PRESETS = listOf(
+    AllDayNotification(hourOfDay = 18, daysBefore = 1),
+    AllDayNotification(hourOfDay = 12, daysBefore = 1),
+    AllDayNotification(hourOfDay = 9, daysBefore = 1),
+    AllDayNotification(hourOfDay = 18, daysBefore = 0),
+    AllDayNotification(hourOfDay = 8, daysBefore = 0),
+)
+
+/** Text-size steps as multiples of the system font scale. */
+private val TEXT_SIZE_STEPS = listOf(0.85f, 1.0f, 1.15f, 1.3f)
+
 private fun allDayLabel(n: AllDayNotification): String =
     "%02d:00, %s".format(Locale.ROOT, n.hourOfDay, if (n.daysBefore <= 1) "day before" else "${n.daysBefore} days before")
 
@@ -855,87 +878,6 @@ private data class PendingImport(
 private fun suggestedFileName(prefix: String, extension: String): String =
     "$prefix-${LocalDate.now()}.$extension"
 
-// Discovery walks 2000-2064 in four-year windows: bounded queries per §10's
-// posture on enormous Instances ranges, wide enough for any plausible local
-// calendar. Events with no instance inside the window are not exported.
-private const val EXPORT_DISCOVERY_START_YEAR = 2000
-private const val EXPORT_DISCOVERY_END_YEAR = 2064
-private const val EXPORT_WINDOW_DAYS = 366L * 4
-
-/**
- * Masters only: exception rows (ORIGINAL_ID set) are §6.3 machinery pointing
- * at a parent that will not exist after import, so each unique master event
- * is loaded fully (modeled columns + reminders) and shipped once.
- */
-private suspend fun collectExportEvents(
-    repository: CalendarRepository,
-): List<IcsCodec.IcsEvent> {
-    val utc = ZoneOffset.UTC
-    val start = LocalDate.of(EXPORT_DISCOVERY_START_YEAR, 1, 1)
-        .atStartOfDay(utc).toInstant().toEpochMilli()
-    val end = LocalDate.of(EXPORT_DISCOVERY_END_YEAR, 1, 1)
-        .atStartOfDay(utc).toInstant().toEpochMilli()
-    val stepMillis = EXPORT_WINDOW_DAYS * 86_400_000L
-
-    val statusByEvent = LinkedHashMap<Long, Int>()
-    var from = start
-    while (from < end) {
-        val to = minOf(end, from + stepMillis)
-        for (instance in repository.instances(from, to)) {
-            if (instance.originalId != null) continue
-            if (!statusByEvent.containsKey(instance.eventId)) {
-                statusByEvent[instance.eventId] = instance.status
-            }
-        }
-        from = to
-    }
-
-    return statusByEvent.mapNotNull { (eventId, status) ->
-        val draft = repository.loadEvent(eventId)?.draft ?: return@mapNotNull null
-        IcsCodec.IcsEvent(
-            eventId = eventId,
-            calendarId = draft.calendarId,
-            title = draft.title,
-            location = draft.location,
-            description = draft.description,
-            startMillis = draft.startMillis,
-            endMillis = draft.endMillis,
-            allDay = draft.allDay,
-            eventTimezone = draft.eventTimezone,
-            eventEndTimezone = draft.eventEndTimezone,
-            rrule = draft.rrule,
-            duration = draft.duration,
-            rdate = draft.rdate,
-            exdate = draft.exdate,
-            availability = draft.availability,
-            status = status,
-            reminderMinutes = repository.remindersFor(eventId).map { it.minutes },
-        )
-    }
-}
-
-/**
- * Duplicate detection needs the UIDs already stored (§9). UID_2445 is readable
- * by a normal client even though only sync adapters write it; any failure here
- * degrades gracefully to intra-file deduplication.
- */
-private fun readKnownUids(context: Context): Set<String> = runCatching {
-    buildSet {
-        context.contentResolver.query(
-            CalendarContract.Events.CONTENT_URI,
-            arrayOf(CalendarContract.Events.UID_2445),
-            null,
-            null,
-            null,
-        )?.use { cursor ->
-            val column = cursor.getColumnIndexOrThrow(CalendarContract.Events.UID_2445)
-            while (cursor.moveToNext()) {
-                cursor.getString(column)?.takeIf { it.isNotBlank() }?.let(::add)
-            }
-        }
-    }
-}.getOrDefault(emptySet())
-
 /** Writes all sixteen survivors plus the filter-fidelity switch (§8.6). */
 private suspend fun applyRestoredSettings(store: SettingsStore, s: AppSettings) {
     store.setDefaultView(s.defaultView)
@@ -955,50 +897,6 @@ private suspend fun applyRestoredSettings(store: SettingsStore, s: AppSettings) 
     store.setFont(s.font)
     store.setTextSizeScale(s.textSizeScale)
     store.setAutoAddedFilterMode(s.autoAddedFilterMode)
-}
-
-/**
- * Inserts parsed drafts into one calendar. Reminders ride along as
- * METHOD_ALERT rows written beside [CalendarRepository.saveEvent] — the
- * modeled path owns no reminder columns (§6.2). Returns the count inserted.
- */
-private suspend fun runIcsImport(
-    repository: CalendarRepository,
-    resolver: ContentResolver,
-    calendarId: Long,
-    drafts: List<IcsCodec.IcsEventDraft>,
-): Int = withContext(Dispatchers.IO) {
-    var inserted = 0
-    for (draft in drafts) {
-        val eventId = repository.saveEvent(
-            EventDraft(
-                calendarId = calendarId,
-                startMillis = draft.startMillis,
-                endMillis = draft.endMillis,
-                eventTimezone = draft.eventTimezone ?: "UTC",
-                title = draft.title,
-                location = draft.location,
-                description = draft.description,
-                duration = draft.duration,
-                allDay = draft.allDay,
-                eventEndTimezone = draft.eventEndTimezone,
-                rrule = draft.rrule,
-                rdate = draft.rdate,
-                exdate = draft.exdate,
-                availability = draft.availability,
-            ),
-        )
-        for (minutes in draft.reminderMinutes.distinct().sorted()) {
-            val values = ContentValues().apply {
-                put(CalendarContract.Reminders.EVENT_ID, eventId)
-                put(CalendarContract.Reminders.MINUTES, minutes)
-                put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
-            }
-            resolver.insert(CalendarContract.Reminders.CONTENT_URI, values)
-        }
-        inserted += 1
-    }
-    inserted
 }
 
 /** Import target chooser — writable calendars only, sigil-sheet styling. */

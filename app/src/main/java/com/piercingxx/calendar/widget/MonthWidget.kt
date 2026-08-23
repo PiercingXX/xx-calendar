@@ -28,9 +28,11 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.piercingxx.calendar.MainActivity
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.calendar.InstanceFilters
 import com.piercingxx.calendar.core.AgendaGrouping
 import com.piercingxx.calendar.core.InstanceSpan
 import com.piercingxx.calendar.core.TimeMath
+import com.piercingxx.calendar.settings.Settings as AppSettings
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
@@ -85,11 +87,20 @@ internal class MonthWidgetContent : GlanceAppWidget() {
         val zone = ZoneId.systemDefault()
         val month = YearMonth.now(zone)
         val today = LocalDate.now(zone)
+        // §8.6: the grid follows startDayOfWeek; filters match the in-app views.
+        val appSettings = currentWidgetSettings(context)
         // A pinned widget before the permission gate must degrade to an empty
         // grid, never crash the host process.
-        val counts = runCatching { loadMonthCounts(context, zone, month) }
+        val counts = runCatching { loadMonthCounts(context, zone, month, appSettings) }
             .getOrDefault(emptyMap())
-        provideContent { MonthSurface(month, counts, today) }
+        provideContent {
+            MonthSurface(
+                month = month,
+                counts = counts,
+                today = today,
+                firstDayOfWeek = DayOfWeek.valueOf(appSettings.startDayOfWeek.name),
+            )
+        }
     }
 }
 
@@ -98,13 +109,21 @@ private suspend fun loadMonthCounts(
     context: Context,
     zone: ZoneId,
     month: YearMonth,
+    appSettings: AppSettings,
 ): Map<LocalDate, Int> {
     val repository = CalendarRepository(context.contentResolver)
     val firstCell = month.atDay(1).minusDays(MARGIN_DAYS)
     val lastCell = month.atEndOfMonth().plusDays(MARGIN_DAYS)
-    val instances = repository.instances(
-        TimeMath.localDayStart(firstCell, zone),
-        TimeMath.localDayStart(lastCell.plusDays(1), zone),
+    val calendars = repository.calendars()
+    val instances = InstanceFilters.apply(
+        repository.instances(
+            TimeMath.localDayStart(firstCell, zone),
+            TimeMath.localDayStart(lastCell.plusDays(1), zone),
+        ),
+        showDeclined = appSettings.showDeclined,
+        hideAutoAdded = appSettings.hideAutoAdded,
+        autoAddedFilterMode = appSettings.autoAddedFilterMode,
+        calendarsById = calendars.associateBy { it.id },
     )
     return AgendaGrouping.group(
         instances.map {
@@ -119,6 +138,7 @@ private fun MonthSurface(
     month: YearMonth,
     counts: Map<LocalDate, Int>,
     today: LocalDate,
+    firstDayOfWeek: DayOfWeek,
 ) {
     Box(
         modifier = GlanceModifier
@@ -140,8 +160,8 @@ private fun MonthSurface(
                 maxLines = 1,
             )
             Spacer(modifier = GlanceModifier.height(4.dp))
-            WeekdayHeader()
-            for (week in weeksOfMonth(month)) {
+            WeekdayHeader(firstDayOfWeek)
+            for (week in weeksOfMonth(month, firstDayOfWeek)) {
                 Row(modifier = GlanceModifier.fillMaxWidth()) {
                     for (date in week) {
                         // RowScope does not cross the call boundary; pass it in.
@@ -160,9 +180,9 @@ private fun MonthSurface(
 }
 
 @Composable
-private fun WeekdayHeader() {
+private fun WeekdayHeader(firstDayOfWeek: DayOfWeek) {
     Row(modifier = GlanceModifier.fillMaxWidth()) {
-        for (label in weekdayLabels()) {
+        for (label in weekdayLabels(firstDayOfWeek)) {
             Column(modifier = GlanceModifier.defaultWeight()) {
                 Text(
                     text = label,
@@ -233,11 +253,11 @@ private fun monthLabel(month: YearMonth): String =
         .uppercase(Locale.getDefault()) + " " + month.year
 
 /**
- * Weeks under the locale's first day of week, same math as MonthScreen's
+ * Weeks under §8.6's start day of week, same math as MonthScreen's
  * buildWeeks; out-of-month cells render so every row holds exactly 7 days.
  */
-private fun weeksOfMonth(month: YearMonth): List<List<LocalDate>> {
-    val leading = leadingDays(month)
+private fun weeksOfMonth(month: YearMonth, firstDayOfWeek: DayOfWeek): List<List<LocalDate>> {
+    val leading = leadingDays(month, firstDayOfWeek)
     val gridStart = month.atDay(1).minusDays(leading.toLong())
     val weekCount = (leading + month.lengthOfMonth() + 6) / 7
     return List(weekCount) { weekIndex ->
@@ -245,21 +265,15 @@ private fun weeksOfMonth(month: YearMonth): List<List<LocalDate>> {
     }
 }
 
-private fun leadingDays(month: YearMonth): Int {
+private fun leadingDays(month: YearMonth, firstDayOfWeek: DayOfWeek): Int {
     val firstDowIso = month.atDay(1).dayOfWeek.value
-    val firstDowLocale = localeFirstDayOfWeekIso()
-    return (firstDowIso + 7 - firstDowLocale) % 7
+    return (firstDowIso + 7 - firstDayOfWeek.value) % 7
 }
 
-private fun localeFirstDayOfWeekIso(): Int =
-    java.time.temporal.WeekFields.of(Locale.getDefault()).firstDayOfWeek.get(
-        java.time.temporal.ChronoField.DAY_OF_WEEK,
-    )
-
-/** Locale-aware short labels aligned with [weeksOfMonth]'s column order. */
-private fun weekdayLabels(): List<String> {
+/** Short labels aligned with [weeksOfMonth]'s column order. */
+private fun weekdayLabels(firstDayOfWeek: DayOfWeek): List<String> {
     val anchorMonday = LocalDate.of(2024, 1, 1) // a known Monday
-    val firstColumnIso = localeFirstDayOfWeekIso()
+    val firstColumnIso = firstDayOfWeek.value
     return (0 until 7).map { offset ->
         anchorMonday
             .plusDays(((firstColumnIso - DayOfWeek.MONDAY.value) + offset).mod(7).toLong())

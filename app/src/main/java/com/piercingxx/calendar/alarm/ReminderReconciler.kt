@@ -8,6 +8,7 @@ import android.provider.CalendarContract
 import android.util.Log
 import com.piercingxx.calendar.calendar.CalendarInstance
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.settings.SettingsStore
 import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +32,7 @@ import kotlinx.coroutines.withContext
  * | TIME_SET / TIMEZONE_CHANGED / MY_PACKAGE_REPLACED | [ReminderReceiver] -> [reconcileAfterBroadcast] |
  * | Provider change on Instances/Events tree          | [ProviderObserver] debounce 2s -> [reconcile] |
  * | Daily heartbeat, 03:00 local, inexact             | [ReminderReceiver] ACTION_DAILY_HEARTBEAT |
- * | App start                                         | [ensureObserving] — intended to be called from MainActivity once this process comes up; this workstream may not edit activity files, so until that one-liner lands the observer stays off and convergence rests on the other four rows. |
+ * | App start                                         | [ensureObserving] — called from MainActivity's onCreate; the provider observer stays attached for the whole process lifetime. |
  *
  * Single-flight: overlapping signals collapse on a Mutex. The app is
  * single-process; cross-process races are not handled (documented honestly).
@@ -110,6 +111,15 @@ object ReminderReconciler {
     private suspend fun reconcileLocked(app: Context) {
         val now = System.currentTimeMillis()
         val repository = CalendarRepository(app.contentResolver)
+
+        // §8.6 all-day anchor: every pass reads the stored policy itself, so
+        // boot- and broadcast-driven reconciles plan with the user's choice
+        // instead of the legacy fixed lead — no dependency on MainActivity
+        // having run in this process. MainActivity's mirror stays as the
+        // change-trigger that re-reconciles on edits; on a read failure the
+        // last-known mirror is kept rather than reset.
+        runCatching { SettingsStore(app).current().allDayNotification }
+            .onSuccess { ReminderPlanner.allDayPolicy = it }
 
         // Instances over [now, now+48h). A trigger can never precede its
         // instance start minus lead, and past triggers are dropped by the

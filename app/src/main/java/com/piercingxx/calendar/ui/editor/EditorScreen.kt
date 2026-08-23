@@ -69,6 +69,8 @@ import com.piercingxx.calendar.core.ScopeResolver
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
+import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.theme.Body
 import com.piercingxx.calendar.ui.theme.EventTitle
@@ -105,6 +107,7 @@ fun EditorScreen(
     val scope = rememberCoroutineScope()
     val repository = remember { CalendarRepository(context.contentResolver) }
     val sigilStore = remember { SigilStore(context.applicationContext) }
+    val settingsStore = remember { SettingsStore(context.applicationContext) }
     val executor = remember { RecurrenceEditor(repository, context.contentResolver) }
 
     val finish: () -> Unit = {
@@ -137,7 +140,15 @@ fun EditorScreen(
     // Load: existing row (edit or duplicate), or blank with pinned times.
     LaunchedEffect(eventId) {
         if (eventId == null) {
-            form = EditorForm.new(zone, initialStartMillis, initialEndMillis)
+            // §8.6 editor defaults; a broken read degrades to the quiet defaults.
+            val defaults = runCatching { settingsStore.current() }.getOrDefault(AppSettings())
+            form = EditorForm.new(
+                zone,
+                initialStartMillis,
+                initialEndMillis,
+                durationMinutes = defaults.defaultDurationMin.toLong(),
+                reminderMinutes = defaults.defaultNotificationMin,
+            )
         } else {
             val l = repository.loadEvent(eventId)
             if (l == null) {
@@ -357,7 +368,7 @@ fun EditorScreen(
 
             ValueRow(
                 label = "repeats",
-                value = repeatLabel(current.rule, current.ruleUnreadable, current.startDate),
+                value = repeatLabel(current.rule, current.ruleUnreadable),
                 onClick = { showRepeatBuilder = true },
             )
             FieldDivider()
