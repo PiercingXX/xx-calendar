@@ -1,0 +1,36 @@
+# ─── Calendar data ───────────────────────────────────────────────────────
+# An .ics export is every appointment you have ever had. Never commit one.
+*.ics
+*.ical
+*.ifb
+backup*.json
+export*/
+
+# ─── Secrets ─────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+!debug.keystore
+
+# ─── Android ─────────────────────────────────────────────────────────────
+local.properties
+.gradle/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.iml
+.idea/
+
+# ─── OS ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+
+# Skippy runtime bookkeeping — never tracked
+.skippy/
