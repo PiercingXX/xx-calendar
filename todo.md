@@ -273,3 +273,60 @@ See the device-gated list at the top.
 Deferred, in rough order of appeal: `.ics` URL subscription (holidays without a
 Google product) · year view · on-device natural-language quick add · secondary
 timezone · Quick Settings tile · next-event widget.
+
+---
+
+## Post-build review — 2026-08-23
+
+Verified on this machine: `./gradlew testDebugUnitTest assembleDebug` green,
+247 tests / 0 failures, manifest declares six permissions and `INTERNET` is not
+among them, no secrets or `.ics` in the tree, `.gitignore` correctly excludes
+`local.properties`, `build/`, `.gradle/`, `*.apk`.
+
+### Blocking
+
+- [ ] **CI is not running.** The first push (`4397ac2`) triggered run
+      `32654322807`, which died in two seconds: *"the job was not started
+      because recent account payments have failed or your spending limit needs
+      to be increased."* Private-repo Actions minutes are billed. The R3 gate —
+      this repo's central claim — is therefore unenforced on every push. Fix
+      billing, or mirror the `aapt2 dump permissions` check into a local
+      pre-push hook so the gate exists somewhere.
+- [ ] **Font licensing.** JetBrains Mono and Space Mono ship as `.ttf` under
+      `res/font/`. Both are OFL 1.1, which requires the license text and
+      copyright notice travel with the fonts. `LICENSE` currently asserts
+      "Copyright (c) 2026 PiercingXX / All rights reserved" over the whole
+      tree, fonts included. Add `third-party/OFL.txt` for both faces and a
+      NOTICE line.
+- [ ] **The local-setup command above is wrong.** It reads
+      `am start -n com.piercingxx.calendar/.ui.MainActivity`; the manifest
+      declares `.MainActivity`. Copy-pasting it fails.
+
+### Should do
+
+- [ ] Release build type has no `signingConfig` and `isMinifyEnabled = false` —
+      there is no path to a shippable release APK. Compounded by the open WS2
+      box: `debug.keystore` was never copied from Nope-Mode, so current
+      sideloads carry a different signing identity than the rest of PiercingXX.
+      Resolve before anything lands on a phone you intend to keep it on.
+- [ ] Run the instrumented suite. All three suites guard exactly the failure
+      modes this plan names as the real risk — recurring-scope writes, opaque
+      column preservation, reminder reconciliation after boot. That they
+      compile is not evidence.
+- [ ] `sourceCompatibility`, `targetCompatibility` and `jvmTarget` are all
+      `1.8` under AGP 8.9 and JDK 17. Works, deprecated, removed in AGP 9.
+      Bump to 11 or 17.
+- [ ] Add `./gradlew lint` to the CI job. Cheap, and it catches manifest and
+      API-level problems that unit tests structurally cannot.
+- [ ] Add `distributionSha256Sum` to `gradle-wrapper.properties`.
+
+### Minor
+
+- [ ] WS3's two open questions remain unanswered, which means the auto-added
+      event filter in Settings ships on an unverified assumption about what
+      marks a Gmail-injected row.
+- [ ] README says "no guests, no RSVP, no tasks, no reminders, no goals" one
+      paragraph away from a full reminder subsystem. It means Google's
+      *Reminders entity*; a reader will not parse that. One clause fixes it.
+- [ ] APPEARANCE rows render and do nothing. Hide them until a second theme
+      exists, or render them visibly disabled.
