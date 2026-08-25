@@ -8,6 +8,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.net.Uri
 import android.os.Build
 import android.text.format.DateUtils
 import androidx.core.app.NotificationCompat
@@ -168,24 +170,42 @@ class ReminderReceiver : BroadcastReceiver() {
      * so quiet and bannered reminders live in separate channels rather than
      * mutating one under the user. Notification channels are API 26+; minSdk
      * is 26, so no version guard is needed here.
+     *
+     * The bundled `res/raw/xx_calendar` chime is the channel's default sound.
+     * A channel's sound is frozen once the channel exists on a device, so the
+     * v2 ids are the migration: create the v2 channel with the sound baked in
+     * and delete the pre-sound v1 ids in the same pass.
      */
     private fun ensureChannel(app: Context, headsUp: Boolean) {
         val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val sound = Uri.parse("android.resource://${app.packageName}/raw/xx_calendar")
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
         // Name is a literal because res/ is outside this workstream's scope.
         manager.createNotificationChannel(
             NotificationChannel(
                 channelIdFor(headsUp),
                 "Reminders",
                 if (headsUp) NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT,
-            ),
+            ).apply { setSound(sound, attributes) },
         )
+        // Retire the soundless v1 channels; deleting an id that never existed
+        // on this device is a no-op.
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID_HEADS_UP)
     }
 
     companion object {
-        const val CHANNEL_ID = "reminders"
+        const val CHANNEL_ID = "reminders_v2"
 
         /** HIGH-importance channel for §8.6 `headsUp`; created on demand. */
-        const val CHANNEL_ID_HEADS_UP = "reminders_heads_up"
+        const val CHANNEL_ID_HEADS_UP = "reminders_heads_up_v2"
+
+        /** Pre-v2 ids (no bundled sound); deleted whenever a channel is ensured. */
+        private const val LEGACY_CHANNEL_ID = "reminders"
+        private const val LEGACY_CHANNEL_ID_HEADS_UP = "reminders_heads_up"
 
         /** Internal heartbeat action delivered via explicit intent; not in the manifest. */
         const val ACTION_DAILY_HEARTBEAT = "com.piercingxx.calendar.alarm.DAILY_HEARTBEAT"

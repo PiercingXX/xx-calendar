@@ -6,7 +6,7 @@ Target: Pixel 9 Pro (`caiman`), GrapheneOS, Android 17 / SDK 37.
 
 **Status: feature-complete against the plan; unverified against a real
 provider.** All twelve workstreams are implemented, and every finding from
-[review.md](review.md) that could be fixed off-device is fixed: 289 JVM unit
+[review.md](review.md) that could be fixed off-device is fixed: 326 JVM unit
 tests green, `lint` green, `assembleDebug` and `assembleDebugAndroidTest`
 green. The privacy claim is machine-proven — `aapt2 dump permissions` on the
 built APK shows zero `INTERNET`; the CI gate fails the build if it ever
@@ -17,8 +17,10 @@ the provider layer's behavior against real CalendarProvider2 / DAVx⁵ data
 import insert) is still evidence-free until it does.
 
 Toolchain deltas from design §14: AGP 8.9.1, Gradle 8.11.1, compileSdk/
-targetSdk 35 (environment baseline). Kotlin 1.9.24, Compose compiler 1.5.14,
-and minSdk 26 are as specified. Robolectric is 4.13, not 4.12.2 — required for
+targetSdk 35 (environment baseline). Kotlin is 2.1.20, not 1.9.24, so the
+Compose compiler is the matching Kotlin plugin rather than the standalone
+1.5.14 pin — the family converged on one Kotlin. Java/jvmTarget is 17, not 1.8.
+minSdk 26 is as specified. Robolectric is 4.13, not 4.12.2 — required for
 compileSdk 35.
 
 Built but device-gated, therefore AMBIGUOUS by plan:
@@ -29,12 +31,13 @@ Built but device-gated, therefore AMBIGUOUS by plan:
   pending owner.
 - WS3's two open questions against real DAVx⁵ data (adb commands live in git
   history and the reports).
-- Instrumented-suite runtime — `./gradlew connectedDebugAndroidTest` when a
-  device attaches.
+- Instrumented-suite runtime — `./gradlew connectedDebugAndroidTest`. The app
+  is installed on a Pixel 6 under GrapheneOS; the suite has still never been
+  pointed at it.
 
-Known inert edges, shipped knowingly: APPEARANCE rows render and do nothing
-(one theme ships). Widget text uses `FontFamily.Monospace` because
-Glance/RemoteViews cannot load `res/font`. glance-appwidget pulls
+Known inert edges, shipped knowingly: widget text uses `FontFamily.Monospace`
+because Glance/RemoteViews cannot load `res/font`, and the widgets stay on the
+Ink ground whatever theme is synced. glance-appwidget pulls
 `WAKE_LOCK`, `ACCESS_NETWORK_STATE`, and `FOREGROUND_SERVICE` transitively —
 `INTERNET` is still absent.
 
@@ -98,9 +101,11 @@ adb shell am start -n com.piercingxx.calendar/.MainActivity
 ```
 
 Copy `debug.keystore` from Nope-Mode before the first build, so all PiercingXX
-sideloads keep one signing identity (design §14). Done 2026-08-23: the keystore
-now lives at `app/debug.keystore`, byte-identical to Nope-Mode's, wired as the
-debug signing config in `app/build.gradle.kts`.
+sideloads keep one signing identity (design §14). Still not done: the keystore
+was committed on 2026-08-23 and taken back out again — no signing material
+lives in this repo, `*.keystore` is gitignored, and debug builds sign with
+AGP's auto-generated `~/.android/debug.keystore`. Release signing reads an
+optional, gitignored `keystore.properties`.
 
 Vendor the brand tokens rather than retyping hexes:
 
@@ -159,7 +164,8 @@ cheapest possible moment to discover the scheme fails.
 
 ## WS2 — Skeleton
 
-- [x] Gradle to design §14. Kotlin 1.9.24, Compose compiler 1.5.14, minSdk 26.
+- [x] Gradle to design §14, with the toolchain deltas noted above. Kotlin
+      2.1.20 and its Compose compiler plugin, minSdk 26.
 - [x] `CalendarTheme` — tokens vendored from the branding repo, not retyped.
 - [x] Space Mono + JetBrains Mono in `res/font/`. Tabular figures on.
 - [x] Underlined-XX adaptive icon on an ink tile.
@@ -231,6 +237,10 @@ before this merges. This is the one that corrupts data.
       individual events (design §4.3).
 - [x] `AlarmScheduler` on `setExactAndAllowWhileIdle`.
 - [x] `BootReceiver`, `ReminderReceiver`, notification channels.
+- [x] Bundled chime `res/raw/xx_calendar.wav` on `reminders_v2` and
+      `reminders_heads_up_v2`. Android freezes a channel's sound at creation,
+      so shipping a sound means shipping a new channel id; the soundless v1
+      ids are deleted in the same pass.
 - [x] `canScheduleExactAlarms()` check → the one warn-coloured row in Settings.
 - [x] Quiet defaults: content preview off, heads-up off, daily agenda off.
 - [x] Never notify for a declined event.
@@ -243,6 +253,9 @@ before this merges. This is the one that corrupts data.
 - [x] Auto-added-event filter, using whatever WS3 found.
 - [x] The honest sync row: last-changed timestamp plus an intent to DAVx⁵, and
       the sentence saying this app cannot see sync state.
+- [x] `default view` doubles as the last-used view — the top-bar switcher
+      writes the key, so launch reopens where you left off. One key, not a
+      second one to drift out of sync.
 
 ## WS10 — Data
 
@@ -256,7 +269,11 @@ before this merges. This is the one that corrupts data.
       `FontFamily.Monospace` — Glance/RemoteViews cannot load `res/font`.)
 - [x] App shortcuts: New event, Today.
 - [x] Intent filters — be the system calendar handler (design §12).
-- [x] `ThemeSyncReceiver` for the XX-Launcher broadcast, as TxxT implements it.
+- [x] `ThemeSyncReceiver` for the XX-Launcher broadcast
+      (`xx.launcher.THEME_CHANGED`), as TxxT implements it. Exported and
+      unguarded — the family contract carries no permission, and the worst a
+      spoof buys is another valid ground. Seven named grounds plus Custom.
+      There is no in-app picker; the launcher is the picker.
 
 ## WS12 — Gates
 
@@ -269,8 +286,9 @@ before this merges. This is the one that corrupts data.
 - [x] Instrumented: reminder reconciliation after a simulated boot.
 
 All three instrumented suites are written and compile
-(`assembleDebugAndroidTest` green) but have never run — no device has attached.
-See the device-gated list at the top.
+(`assembleDebugAndroidTest` green) but have never run. The app is on a Pixel 6
+now; the suite has not been pointed at it. See the device-gated list at the
+top.
 
 ---
 
@@ -289,10 +307,12 @@ timezone · Quick Settings tile · next-event widget.
 > P0 correctness findings the 247 green tests do not cover.
 >
 > **Resolution pass, later on 2026-08-23:** all five review P0s fixed with
-> regression tests (suite now 289 green), and the Blocking/Should-do/Minor
-> items below are ticked where the fix is provable off-device. What remains
-> open is exactly what needs hardware or account access: CI billing, the
-> instrumented suite run, and the on-phone sigil-mock verdict.
+> regression tests (the suite stood at 289 green that day; 326 now, after
+> theme sync, last-view persistence and the reminder chime), and the
+> Blocking/Should-do/Minor items below are ticked where the fix is provable
+> off-device. What remains open is exactly what needs hardware or account
+> access: CI billing, the instrumented suite run, and the on-phone sigil-mock
+> verdict.
 
 Verified on this machine: `./gradlew testDebugUnitTest assembleDebug` green,
 247 tests / 0 failures, manifest declares six permissions and `INTERNET` is not
@@ -328,9 +348,10 @@ among them, no secrets or `.ics` in the tree, `.gitignore` correctly excludes
 - [x] Release build type has no `signingConfig` and `isMinifyEnabled = false` —
       ~~there is no path to a shippable release APK.~~ Resolved half-way, on
       purpose: release now signs via an optional `keystore.properties`
-      (gitignored; falls back to the shared debug key when absent), and the
-      shared identity is fixed — `app/debug.keystore` is Nope-Mode's,
-      byte-identical. R8 stays off until the instrumented suite has run on a
+      (gitignored; falls back to the local debug key when absent). The shared
+      signing identity is *not* fixed — the committed `app/debug.keystore` was
+      taken back out, so debug builds carry this machine's auto-generated key
+      (see WS2). R8 stays off until the instrumented suite has run on a
       device; enabling minification blind would trade one unknown for another.
       The first real release build should confirm the storeFile path resolves
       as given.
@@ -363,5 +384,8 @@ among them, no secrets or `.ics` in the tree, `.gitignore` correctly excludes
       exists, or render them visibly disabled.~~ Superseded by review P0 #4's
       full pass: every visible Settings row now controls behavior; the rows
       that could not be honestly wired (`dimPast`, `dailyAgenda`, and the
-      single-valued `background`/`font` pickers) are hidden, their keys still
-      persist and round-trip through backup.
+      `background`/`font` pickers) are hidden, their keys still persist and
+      round-trip through backup. APPEARANCE keeps `text size`. The `background`
+      picker stays hidden for a second reason now — WS11's theme sync makes the
+      launcher the picker for the whole family, so an in-app one would be a
+      second source of truth.

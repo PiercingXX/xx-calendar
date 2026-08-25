@@ -294,6 +294,10 @@ fun SettingsScreen() {
         // ---------------------------------------------------------- VIEW
 
         Section("VIEW")
+        // Shares its key with last-view persistence: switching views in the
+        // top bar rewrites `default view`, so this row always reads as the
+        // view the next launch will open — cycling it here still works, it
+        // just holds only until the next in-app view switch.
         ValueRow(
             label = "default view",
             value = settings.defaultView.displayName(),

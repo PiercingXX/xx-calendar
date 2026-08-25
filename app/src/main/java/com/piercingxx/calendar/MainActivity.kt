@@ -60,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -110,6 +111,7 @@ import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.TextStyle as JavaTextStyle
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -144,7 +146,11 @@ class MainActivity : ComponentActivity() {
                             .background(MaterialTheme.colorScheme.background),
                     )
                 } else {
-                    AppRoot(pending = pendingLink, settings = loaded)
+                    AppRoot(
+                        pending = pendingLink,
+                        settings = loaded,
+                        settingsStore = settingsStore,
+                    )
                 }
             }
         }
@@ -209,8 +215,12 @@ private const val ROUTE_DAY = "day"
 private const val ROUTE_WEEK = "week"
 private const val ROUTE_MONTH = "month"
 
-/** §8.6 `default view` -> navigation route opened at launch. */
-private fun routeFor(view: DefaultView): String = when (view) {
+/**
+ * §8.6 `default view` -> navigation route opened at launch. Internal (not
+ * private) so the last-view persistence test can pin the mapping without a
+ * device.
+ */
+internal fun routeFor(view: DefaultView): String = when (view) {
     DefaultView.SCHEDULE -> ROUTE_SCHEDULE
     DefaultView.DAY -> ROUTE_DAY
     DefaultView.WEEK -> ROUTE_WEEK
@@ -226,6 +236,7 @@ private fun routeFor(view: DefaultView): String = when (view) {
 internal fun AppRoot(
     pending: MutableState<DeepLink?>,
     settings: AppSettings,
+    settingsStore: SettingsStore,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -265,7 +276,12 @@ internal fun AppRoot(
         return
     }
 
-    AppShell(pending = pending, settings = settings, modifier = modifier)
+    AppShell(
+        pending = pending,
+        settings = settings,
+        settingsStore = settingsStore,
+        modifier = modifier,
+    )
 }
 
 @Composable
@@ -341,6 +357,7 @@ private fun PermissionGate(
 private fun AppShell(
     pending: MutableState<DeepLink?>,
     settings: AppSettings,
+    settingsStore: SettingsStore,
     modifier: Modifier = Modifier,
 ) {
     val navController = rememberNavController()
@@ -403,7 +420,7 @@ private fun AppShell(
     ) {
         Scaffold(
             containerColor = colors.ink,
-            topBar = { CalendarTopBar(navController, scheduleWindow, settings) },
+            topBar = { CalendarTopBar(navController, scheduleWindow, settings, settingsStore) },
             floatingActionButton = {
                 FloatingActionButton(
                     onClick = { navController.navigate("editor/null-placeholder") },
@@ -414,9 +431,12 @@ private fun AppShell(
                 }
             },
         ) { padding ->
-            // §8.6 default view: captured on first composition (this composable
-            // only exists once settings have loaded), so a later settings edit
-            // never yanks the user out of the view they are in.
+            // §8.6 default view — which, since every top-bar view switch also
+            // writes it, is the view the user was last in: launch reopens
+            // there. Captured on first composition (this composable only
+            // exists once settings have loaded), so neither a settings edit
+            // nor the switcher's own writes yank the user out of the view
+            // they are in mid-session.
             val startDestination = remember { routeFor(settings.defaultView) }
             NavHost(
                 navController = navController,
@@ -507,11 +527,18 @@ private fun AppShell(
     }
 }
 
-private val VIEWS = listOf(
-    ROUTE_SCHEDULE to "Schedule",
-    ROUTE_DAY to "Day",
-    ROUTE_WEEK to "Week",
-    ROUTE_MONTH to "Month",
+/**
+ * The top-bar view switcher's menu, keyed by [DefaultView] rather than raw
+ * routes so the entry the user taps is also the value persisted as the
+ * last-used view — one list cannot drift from the other. Internal (not
+ * private) so the last-view persistence test can prove it covers every
+ * [DefaultView] without a device.
+ */
+internal val VIEWS = listOf(
+    DefaultView.SCHEDULE to "Schedule",
+    DefaultView.DAY to "Day",
+    DefaultView.WEEK to "Week",
+    DefaultView.MONTH to "Month",
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -520,8 +547,10 @@ private fun CalendarTopBar(
     navController: NavController,
     scheduleWindow: ScheduleWindowState,
     settings: AppSettings,
+    settingsStore: SettingsStore,
 ) {
     val colors = LocalCalendarColors.current
+    val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var pickerOpen by remember { mutableStateOf(false) }
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
@@ -554,7 +583,8 @@ private fun CalendarTopBar(
                 expanded = menuOpen,
                 onDismissRequest = { menuOpen = false },
             ) {
-                VIEWS.forEach { (route, label) ->
+                VIEWS.forEach { (view, label) ->
+                    val route = routeFor(view)
                     DropdownMenuItem(
                         text = {
                             Text(
@@ -566,6 +596,14 @@ private fun CalendarTopBar(
                         onClick = {
                             menuOpen = false
                             switchView(navController, route)
+                            // Last-view persistence: the view you switch to is
+                            // the view the next launch opens ("if I am in month
+                            // view, it should open that way"). Written through
+                            // the §8.6 `default view` key on purpose — launch
+                            // route and last-used view are one fact, so the
+                            // Settings row always shows what will actually
+                            // open, and backup/restore (§9) carries it free.
+                            scope.launch { settingsStore.setDefaultView(view) }
                         },
                     )
                 }

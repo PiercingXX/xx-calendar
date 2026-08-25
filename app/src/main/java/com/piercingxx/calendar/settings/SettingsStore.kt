@@ -20,7 +20,12 @@ import kotlinx.coroutines.flow.map
 
 private val Context.settingsDataStore by preferencesDataStore(name = "settings")
 
-/** §8.6 VIEW — which Instances view opens first. D10: schedule answers "what is next". */
+/**
+ * §8.6 VIEW — which Instances view opens at launch. D10: schedule answers
+ * "what is next", so it is the fresh-install default. The top-bar view
+ * switcher also writes this key on every switch, so the value doubles as
+ * "the view the user was last in" and the next launch reopens there.
+ */
 enum class DefaultView { SCHEDULE, DAY, WEEK, MONTH }
 
 /** §8.6 VIEW — first column of the week grids. */
@@ -143,6 +148,9 @@ class SettingsStore(
 
     suspend fun current(): Settings = settings.first()
 
+    // Written from two places by design: the Settings row and the top-bar
+    // view switcher (last-view persistence). One key means the launch view
+    // and the last-used view can never disagree.
     suspend fun setDefaultView(value: DefaultView) =
         write { it[Keys.DEFAULT_VIEW] = value.name }
 
