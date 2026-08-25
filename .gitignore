@@ -13,10 +13,10 @@ export*/
 secrets/
 *.pem
 *.key
-# Never commit signing material — the shared debug keystore is the one
-# deliberate exception (mirrors nope-mode; see NOTICE and review P1).
+# Never commit signing material — no exceptions. Debug builds use the
+# default auto-generated ~/.android/debug.keystore.
 *.keystore
-!debug.keystore
+*.jks
 # Release signing material (storeFile/storePassword/keyAlias/keyPassword).
 keystore.properties
 

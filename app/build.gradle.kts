@@ -3,6 +3,7 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // Release signing is optional: when keystore.properties exists at the repo root
@@ -28,14 +29,8 @@ android {
     }
 
     signingConfigs {
-        // Shared PiercingXX sideload identity (copied from nope-mode). Changing
-        // this later means uninstall-and-lose-state on the phone — never rotate.
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
+        // Debug signing is deliberately left to AGP's default auto-generated
+        // ~/.android/debug.keystore — no signing material lives in this repo.
         if (keystoreProperties.isNotEmpty()) {
             create("release") {
                 storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
@@ -47,9 +42,6 @@ android {
     }
 
     buildTypes {
-        debug {
-            signingConfig = signingConfigs.getByName("debug")
-        }
         release {
             // R8 stays off until the instrumented suite has run against a real
             // device (review P1): minification without that evidence risks
@@ -63,11 +55,11 @@ android {
                 signingConfigs.getByName("release")
             } else {
                 // Loud, not silent: without keystore.properties a "release" APK
-                // carries the public, committed debug identity — fine for
+                // carries the local auto-generated debug identity — fine for
                 // personal sideloads, never for distribution.
                 logger.warn(
                     "XX-Calendar: no keystore.properties found — " +
-                        "release APK will be signed with the shared DEBUG key. " +
+                        "release APK will be signed with the default DEBUG key. " +
                         "Provide keystore.properties for a distributable release.",
                 )
                 signingConfigs.getByName("debug")
@@ -87,10 +79,6 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
     }
 
     testOptions {
@@ -113,14 +101,13 @@ android {
 // hybrid decision raised compileSdk to 35; unit tests pin sdk=34 via
 // src/test/resources/robolectric.properties.
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
+    val composeBom = platform("androidx.compose:compose-bom:2025.06.00")
     implementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.0")
-    // 2.7.0, not 2.8.x: LocalLifecycleOwner moved in 2.8 and breaks on BOM 2024.06.
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
-    implementation("androidx.navigation:navigation-compose:2.7.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
+    implementation("androidx.navigation:navigation-compose:2.9.0")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
