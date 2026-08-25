@@ -40,6 +40,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
@@ -100,7 +101,7 @@ import com.piercingxx.calendar.ui.theme.MonthHeader
 import com.piercingxx.calendar.ui.theme.SpaceMono
 import com.piercingxx.calendar.ui.theme.CalendarTheme
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
-import com.piercingxx.calendar.ui.theme.calendarColors
+import com.piercingxx.calendar.ui.theme.ThemeGroundState
 import com.piercingxx.calendar.ui.week.WeekScreen
 import java.time.DayOfWeek
 import java.time.Instant
@@ -140,13 +141,21 @@ class MainActivity : ComponentActivity() {
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .background(calendarColors().ink),
+                            .background(MaterialTheme.colorScheme.background),
                     )
                 } else {
                     AppRoot(pending = pendingLink, settings = loaded)
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Family theme sync: re-read the ground the launcher broadcast may
+        // have persisted while this process was dead or backgrounded. Runs
+        // before the first frame, so launch composes with the synced ground.
+        ThemeGroundState.refresh(this)
     }
 
     override fun onNewIntent(intent: Intent) {

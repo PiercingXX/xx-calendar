@@ -3,54 +3,69 @@ package com.piercingxx.calendar.widget
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
-import com.piercingxx.calendar.settings.AppBackground
-import com.piercingxx.calendar.settings.SettingsStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import com.piercingxx.calendar.ui.theme.ThemeGroundState
+import com.piercingxx.calendar.ui.theme.ThemeGroundStore
+import com.piercingxx.calendar.ui.theme.resolveGround
 
 /**
- * Receives XX-Launcher's `com.piercingxx.launcher.THEME_CHANGED` broadcast, as
- * TxxT implements it (design §12).
+ * Receives the xx-launcher's family-wide theme broadcast
+ * (`xx.launcher.THEME_CHANGED`, explicitly targeted at this package — required
+ * since Android O for manifest receivers) and persists the carried ground.
  *
- * Contract, as closely as a broadcast allows: an optional `background` String
- * extra names the desired background preset. When it matches a known
- * [AppBackground] value the choice is persisted to [SettingsStore]; anything
- * else — missing action, missing extra, unknown name, null anything — is
- * ignored silently. No network is touched. The receiver stays exported because
- * the sender is another app, not the system (manifest §12), but it is guarded
- * by the signature-level `com.piercingxx.calendar.permission.THEME_SYNC`
- * permission: only apps signed with the PiercingXX key that also hold the
- * permission can deliver here — anything else has its broadcast silently
- * dropped by the platform before onReceive runs.
+ * Contract (identical across the family, as TxxT implements it): the
+ * THEME_NAME extra carries the preset display name ("AMOLED Night" …
+ * "Custom", matched case-insensitively) and the BACKGROUND extra the resolved
+ * background ARGB int (present even for Custom). A known name resolves through
+ * the canonical preset table; "Custom" takes the carried background; anything
+ * malformed — wrong action, missing/unknown name, Custom without a background
+ * — is ignored silently. The result persists via [ThemeGroundState.storeFor],
+ * which also updates the live Compose state so a foregrounded app re-themes
+ * immediately; a dead process picks it up on the next activity onResume.
+ *
+ * Exported without a permission guard, matching TxxT and the launcher's
+ * contract (the launcher holds no calendar-defined permission). The worst a
+ * spoofed broadcast can do is switch the ground to another valid preset — no
+ * data moves, no network exists (no INTERNET permission in this manifest).
+ *
+ * The action/extra keys and the store factory are injectable so a JVM unit
+ * test can drive [onReceive] via seams without mocking SharedPreferences.
  */
-class ThemeSyncReceiver : BroadcastReceiver() {
+class ThemeSyncReceiver(
+    /** Action to match; injectable for tests. */
+    private val action: String = ACTION_THEME_CHANGED,
+    /** Extracts the display name; defaults to the THEME_NAME extra. */
+    private val extractThemeName: (Intent) -> String? = { intent ->
+        intent.getStringExtra(EXTRA_THEME_NAME)
+    },
+    /** Extracts the resolved background ARGB, null when the extra is absent. */
+    private val extractBackground: (Intent) -> Long? = { intent ->
+        if (intent.hasExtra(EXTRA_BACKGROUND)) {
+            intent.getIntExtra(EXTRA_BACKGROUND, 0).toLong() and 0xFFFFFFFFL
+        } else {
+            null
+        }
+    },
+    /** Builds the store the resolved ground persists into; injectable seam. */
+    private val storeFactory: (Context) -> ThemeGroundStore = { context ->
+        ThemeGroundState.storeFor(context)
+    },
+) : BroadcastReceiver() {
 
     override fun onReceive(context: Context?, intent: Intent?) {
-        if (intent?.action != ACTION_THEME_CHANGED) return
-        val name = intent.getStringExtra(EXTRA_BACKGROUND) ?: return
-        val value = AppBackground.entries.firstOrNull { it.name == name } ?: return
-        val app = context?.applicationContext ?: return
-
-        // DataStore writes are async disk IO; goAsync keeps the process alive
-        // until the write lands. A failed write (IOException from a broken
-        // store, say) must not crash the process from inside a broadcast.
-        val pending = goAsync()
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            try {
-                runCatching { SettingsStore(app).setBackground(value) }
-                    .onFailure { Log.w(TAG, "background persist failed: ${it.message}") }
-            } finally {
-                pending.finish()
-            }
-        }
+        if (context == null || intent?.action != action) return
+        val ground = resolveGround(extractThemeName(intent), extractBackground(intent))
+            ?: return
+        storeFactory(context).save(ground)
     }
 
-    private companion object {
-        const val TAG = "ThemeSyncReceiver"
-        const val ACTION_THEME_CHANGED = "com.piercingxx.launcher.THEME_CHANGED"
-        const val EXTRA_BACKGROUND = "background"
+    companion object {
+        /** The xx-launcher's theme-change broadcast action. */
+        const val ACTION_THEME_CHANGED = "xx.launcher.THEME_CHANGED"
+
+        /** String extra: the active preset's display name. */
+        const val EXTRA_THEME_NAME = "xx.launcher.extra.THEME_NAME"
+
+        /** Int extra: the resolved background ARGB (present even for Custom). */
+        const val EXTRA_BACKGROUND = "xx.launcher.extra.BACKGROUND"
     }
 }

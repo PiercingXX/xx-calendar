@@ -15,12 +15,19 @@ import com.piercingxx.calendar.settings.AppBackground
 import com.piercingxx.calendar.settings.AppFont
 import com.piercingxx.calendar.settings.Density
 import com.piercingxx.calendar.settings.SettingsStore
+import androidx.compose.material3.MaterialTheme
 import com.piercingxx.calendar.ui.settings.SettingsScreen
 import com.piercingxx.calendar.ui.theme.CalendarTheme
-import com.piercingxx.calendar.ui.theme.calendarColors
+import com.piercingxx.calendar.ui.theme.ThemeGroundState
 
 /** Thin host for Settings (design §8.6). WS9 owns the real screen. */
 class SettingsActivity : ComponentActivity() {
+
+    override fun onResume() {
+        super.onResume()
+        ThemeGroundState.refresh(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -36,7 +43,7 @@ class SettingsActivity : ComponentActivity() {
                 density = settings?.density ?: Density.COMFORTABLE,
             ) {
                 if (settings == null) {
-                    Box(Modifier.fillMaxSize().background(calendarColors().ink))
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
                 } else {
                     SettingsScreen()
                 }

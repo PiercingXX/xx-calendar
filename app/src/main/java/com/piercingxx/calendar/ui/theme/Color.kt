@@ -59,3 +59,37 @@ fun calendarColors(background: AppBackground = AppBackground.AMOLED_NIGHT): Cale
 val LocalCalendarColors = staticCompositionLocalOf<CalendarColors> {
     error("CalendarColors not provided - wrap content in CalendarTheme")
 }
+
+/**
+ * Overlay a synced launcher [ground] (family theme sync) onto the shipped
+ * token set. Scope is the GROUND only: background, the raised-surface ladder,
+ * the foreground opacity ramp, and — on light grounds, where signal white
+ * would vanish — the accent, which inverts to ink. `warn`/`error` keep their
+ * shipped hues on every ground. Null or the AMOLED default returns `this`
+ * unchanged, so the pxx_* resource path stays the source of truth by default.
+ */
+fun CalendarColors.withGround(ground: ThemeGround?): CalendarColors {
+    if (ground == null || ground.background == ThemePreset.DEFAULT.background) return this
+    val s = deriveGroundScheme(ground.background)
+    return copy(
+        ink = groundColor(s.background),
+        inkRaised = groundColor(s.surfaceRaised),
+        graphite = groundColor(s.surfaceContainer),
+        slate = groundColor(s.surfaceHigh),
+        line = groundColor(s.line),
+        shade = groundColor(s.shade),
+        muted = groundColor(s.muted),
+        strong = groundColor(s.strong),
+        text = groundColor(s.text),
+        signal = groundColor(s.accent),
+        emphasisBg = groundColor(s.accent),
+        emphasisFg = groundColor(s.accentOn),
+        // ok/info are ramp aliases in the shipped palette (white-90/white-50);
+        // keep them aliased so status text stays legible on light grounds.
+        ok = groundColor(s.text),
+        info = groundColor(s.muted),
+    )
+}
+
+/** 0xAARRGGBB long -> Compose sRGB color. */
+private fun groundColor(argb: Long): Color = Color(argb.toInt())

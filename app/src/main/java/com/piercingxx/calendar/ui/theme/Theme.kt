@@ -1,11 +1,21 @@
 package com.piercingxx.calendar.ui.theme
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.graphics.drawable.ColorDrawable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
+import androidx.core.view.WindowCompat
 import com.piercingxx.calendar.settings.AppBackground
 import com.piercingxx.calendar.settings.AppFont
 import com.piercingxx.calendar.settings.Density as AppDensity
@@ -45,7 +55,13 @@ fun CalendarTheme(
     density: AppDensity = AppDensity.COMFORTABLE,
     content: @Composable () -> Unit,
 ) {
-    val colors = calendarColors(background)
+    // Family theme sync: the launcher's broadcast persists a ThemeGround the
+    // receiver/onResume push into ThemeGroundState; it overlays the GROUND
+    // (background + surfaces + foreground ramp, accent inverted on light
+    // grounds) onto the shipped pxx_* tokens. Null keeps the AMOLED default.
+    val ground by ThemeGroundState.ground
+    val baseColors = calendarColors(background)
+    val colors = remember(baseColors, ground) { baseColors.withGround(ground) }
     val scheme = darkColorScheme(
         primary = colors.signal,
         onPrimary = colors.ink,
@@ -92,6 +108,26 @@ fun CalendarTheme(
         density = base.density * densityScaleFactor(density),
         fontScale = base.fontScale * clampedTextSizeScale(textSizeScale),
     )
+    // Window ground: themes.xml pins pxx_ink statically; a synced ground must
+    // also repaint the window background (what shows behind the edge-to-edge
+    // bars) and flip bar icons dark on light grounds.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        val groundArgb = colors.ink.toArgb()
+        val lightGround = prefersInkForeground(groundArgb.toLong() and 0xFFFFFFFFL)
+        SideEffect {
+            val window = view.context.findActivity()?.window ?: return@SideEffect
+            window.setBackgroundDrawable(ColorDrawable(groundArgb))
+            @Suppress("DEPRECATION") // no-ops on 35's enforced edge-to-edge
+            window.statusBarColor = groundArgb
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = groundArgb
+            WindowCompat.getInsetsController(window, view).let {
+                it.isAppearanceLightStatusBars = lightGround
+                it.isAppearanceLightNavigationBars = lightGround
+            }
+        }
+    }
     CompositionLocalProvider(
         LocalCalendarColors provides colors,
         LocalDensity provides scaled,
@@ -102,4 +138,11 @@ fun CalendarTheme(
             content = content,
         )
     }
+}
+
+/** Unwrap ContextWrappers (Compose hands out themed wrappers) to the Activity. */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
