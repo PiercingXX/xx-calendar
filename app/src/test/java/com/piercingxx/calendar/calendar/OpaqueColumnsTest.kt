@@ -2,6 +2,7 @@ package com.piercingxx.calendar.calendar
 
 import android.content.ContentValues
 import android.database.MatrixCursor
+import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -72,6 +73,13 @@ class OpaqueColumnsTest {
         assertFalse(OpaqueColumns.isPreservable(Events.MUTATORS))
         assertFalse(OpaqueColumns.isPreservable(Events.LAST_DATE))
         assertFalse(OpaqueColumns.isPreservable(Events.SELF_ATTENDEE_STATUS))
+        // Joined calendar columns on Events.CONTENT_URI (view_events). Writing
+        // any of these is "Only the provider may write to …".
+        assertFalse(OpaqueColumns.isPreservable(Calendars.CALENDAR_DISPLAY_NAME))
+        assertFalse(OpaqueColumns.isPreservable(Calendars.VISIBLE))
+        assertFalse(OpaqueColumns.isPreservable(Calendars.CALENDAR_ACCESS_LEVEL))
+        assertFalse(OpaqueColumns.isPreservable(Calendars.CAL_SYNC1))
+        assertFalse(OpaqueColumns.isPreservable(Events.DISPLAY_COLOR))
     }
 
     // ------------------------------------------------------------- capture

@@ -2,6 +2,7 @@ package com.piercingxx.calendar.calendar
 
 import android.content.ContentValues
 import android.database.Cursor
+import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 
 /**
@@ -56,9 +57,17 @@ object OpaqueColumns {
      *   row would do the same. Absence preserves them on update, and inserts
      *   simply start without them.
      * - `IS_ORGANIZER`, `EVENT_COLOR`, `HAS_ALARM`,
-     *   `HAS_EXTENDED_PROPERTIES`, `LAST_DATE`: derived by the provider.
+     *   `HAS_EXTENDED_PROPERTIES`, `LAST_DATE`, `DISPLAY_COLOR`,
+     *   `CAN_INVITE_OTHERS`: derived by the provider.
      * - `SELF_ATTENDEE_STATUS`: attendee-domain state this app never edits
      *   (teardown §3.4 — attendee rows are untouched).
+     * - Calendar join columns (`calendar_displayName`, `visible`,
+     *   `calendar_access_level`, `cal_sync*`, …): `Events.CONTENT_URI` with a
+     *   null projection returns the `view_events` join. Writing any of
+     *   `Events.PROVIDER_WRITABLE_COLUMNS` is rejected with
+     *   `"Only the provider may write to …"` — the toast a DAVx⁵/Google
+     *   event surfaces on save. Local-only rows often lack those join
+     *   values, which is why the failure looks like "synced events only".
      *
      * `CUSTOM_APP_PACKAGE`/`CUSTOM_APP_URI` stay preservable — those are
      * app-writable and carry conferencing URIs (design §6.2).
@@ -90,6 +99,36 @@ object OpaqueColumns {
         Events.HAS_EXTENDED_PROPERTIES,
         Events.LAST_DATE,
         Events.SELF_ATTENDEE_STATUS,
+        Events.DISPLAY_COLOR,
+        Events.CAN_INVITE_OTHERS,
+        Calendars.CALENDAR_DISPLAY_NAME,
+        Calendars.CALENDAR_COLOR,
+        Calendars.CALENDAR_COLOR_KEY,
+        Calendars.VISIBLE,
+        Calendars.SYNC_EVENTS,
+        Calendars.CALENDAR_ACCESS_LEVEL,
+        Calendars.CALENDAR_TIME_ZONE,
+        Calendars.OWNER_ACCOUNT,
+        Calendars.MAX_REMINDERS,
+        Calendars.ALLOWED_REMINDERS,
+        Calendars.ALLOWED_AVAILABILITY,
+        Calendars.ALLOWED_ATTENDEE_TYPES,
+        Calendars.CAN_MODIFY_TIME_ZONE,
+        Calendars.CAN_ORGANIZER_RESPOND,
+        Calendars.CAN_PARTIALLY_UPDATE,
+        Calendars.IS_PRIMARY,
+        Calendars.CALENDAR_LOCATION,
+        Calendars.NAME,
+        Calendars.CAL_SYNC1,
+        Calendars.CAL_SYNC2,
+        Calendars.CAL_SYNC3,
+        Calendars.CAL_SYNC4,
+        Calendars.CAL_SYNC5,
+        Calendars.CAL_SYNC6,
+        Calendars.CAL_SYNC7,
+        Calendars.CAL_SYNC8,
+        Calendars.CAL_SYNC9,
+        Calendars.CAL_SYNC10,
     )
 
     fun isModeled(column: String): Boolean = column in MODELED_EVENT_COLUMNS

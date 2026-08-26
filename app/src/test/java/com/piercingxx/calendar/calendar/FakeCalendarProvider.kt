@@ -355,6 +355,11 @@ class FakeCalendarProvider : ContentProvider() {
                 throw IllegalArgumentException("Only sync adapters may write to $column")
             }
         }
+        for (column in PROVIDER_ONLY_COLUMNS) {
+            if (values.containsKey(column)) {
+                throw IllegalArgumentException("Only the provider may write to $column")
+            }
+        }
     }
 
     private fun isCallerSyncAdapter(uri: Uri): Boolean =
@@ -658,6 +663,24 @@ class FakeCalendarProvider : ContentProvider() {
             CalendarContract.Events.SYNC_DATA8,
             CalendarContract.Events.SYNC_DATA9,
             CalendarContract.Events.SYNC_DATA10,
+        )
+
+        /** Events.PROVIDER_WRITABLE_COLUMNS — joined calendar fields on view_events. */
+        private val PROVIDER_ONLY_COLUMNS = listOf(
+            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+            CalendarContract.Calendars.CALENDAR_COLOR,
+            CalendarContract.Calendars.VISIBLE,
+            CalendarContract.Calendars.SYNC_EVENTS,
+            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
+            CalendarContract.Calendars.CALENDAR_TIME_ZONE,
+            CalendarContract.Calendars.OWNER_ACCOUNT,
+            CalendarContract.Calendars.ALLOWED_REMINDERS,
+            CalendarContract.Calendars.ALLOWED_AVAILABILITY,
+            CalendarContract.Calendars.ALLOWED_ATTENDEE_TYPES,
+            CalendarContract.Calendars.CAN_MODIFY_TIME_ZONE,
+            CalendarContract.Calendars.CAN_ORGANIZER_RESPOND,
+            CalendarContract.Calendars.CAN_PARTIALLY_UPDATE,
+            CalendarContract.Calendars.CAL_SYNC1,
         )
     }
 }

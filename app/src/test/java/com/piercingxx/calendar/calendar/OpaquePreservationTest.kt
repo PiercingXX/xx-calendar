@@ -1,5 +1,6 @@
 package com.piercingxx.calendar.calendar
 
+import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import com.piercingxx.calendar.calendar.Fixtures.seedCalendar
 import com.piercingxx.calendar.calendar.Fixtures.utc
@@ -57,6 +58,12 @@ class OpaquePreservationTest : FakeProviderFixture() {
         "sync_data1" to "gmail-message-id:AAAAAA",
         "sync_data2" to "etag:v9",
         "sync_data3" to null,
+        // Joined calendar columns as Events.CONTENT_URI actually returns them
+        // on a DAVx⁵ row (view_events). Writing these is
+        // "Only the provider may write to calendar_displayName".
+        Calendars.CALENDAR_DISPLAY_NAME to "Work",
+        Calendars.VISIBLE to 1L,
+        Calendars.CALENDAR_ACCESS_LEVEL to Calendars.CAL_ACCESS_OWNER.toLong(),
     )
 
     /** Opaque columns this app MAY hold and write back (design §6.2). */
@@ -68,6 +75,13 @@ class OpaquePreservationTest : FakeProviderFixture() {
 
     /** Sync-adapter-owned columns that must travel by absence only (WS13.1). */
     private val syncOwnedColumns = listOf("sync_data1", "sync_data2", "sync_data3")
+
+    /** Calendar join columns the real provider attaches to every event row. */
+    private val providerOnlyColumns = listOf(
+        Calendars.CALENDAR_DISPLAY_NAME,
+        Calendars.VISIBLE,
+        Calendars.CALENDAR_ACCESS_LEVEL,
+    )
 
     @Before
     fun seed() {
@@ -107,6 +121,34 @@ class OpaquePreservationTest : FakeProviderFixture() {
                 loaded.opaque.values.containsKey(column),
             )
         }
+    }
+
+    @Test
+    fun `load never captures joined calendar columns into the opaque bag`() = runTest {
+        val loaded = repo().loadEvent(1L)!!
+
+        for (column in providerOnlyColumns) {
+            assertFalse(
+                "opaque bag must not hold provider-only $column",
+                loaded.opaque.values.containsKey(column),
+            )
+        }
+    }
+
+    @Test
+    fun `title-only edit of a row with calendar join columns succeeds`() = runTest {
+        val repo = repo()
+        val loaded = repo.loadEvent(1L)!!
+
+        // FakeCalendarProvider throws "Only the provider may write to …" if
+        // calendar_displayName / visible / calendar_access_level are in the
+        // update — the exact rejection a DAVx⁵ event hits on device.
+        repo.saveEvent(loaded.draft.copy(title = "renamed locally"), loaded.opaque)
+
+        val after = fake.events.getValue(1L)
+        assertEquals("renamed locally", after[Events.TITLE])
+        assertEquals("Work", after[Calendars.CALENDAR_DISPLAY_NAME])
+        assertEquals(1L, after[Calendars.VISIBLE])
     }
 
     // ------------------------------------------------------- THE D8 TEST

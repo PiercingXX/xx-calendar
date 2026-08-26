@@ -90,10 +90,17 @@ class CalendarRepository(
     /**
      * Insert ([EventDraft.eventId] == null) or update an event.
      *
-     * On update only modeled columns plus [opaque] are written (D8): the held
-     * values round-trip untouched, so unmodeled columns can be neither cleared
-     * nor altered by this layer. [opaque] may also carry values for a fresh
-     * insert (the detail sheet's duplicate action).
+     * On update, only modeled columns are written. CalendarProvider2 merges
+     * the patch onto the existing row, so unspecified columns stay put — that
+     * is how D8 is satisfied for an edit. Writing captured opaque values back
+     * on update is how a DAVx⁵ row's joined calendar columns
+     * (`calendar_displayName`, `visible`, …) produced
+     * `"Only the provider may write to …"`.
+     *
+     * On insert, [opaque] is merged so a duplicate / exception / continuation
+     * can carry app-writable extras (CUSTOM_APP_*, ACCESS_LEVEL, ORGANIZER).
+     * Calendar-join and sync-owned keys are already stripped by
+     * [OpaqueColumns].
      */
     suspend fun saveEvent(
         draft: EventDraft,
@@ -101,9 +108,9 @@ class CalendarRepository(
     ): Long = withContext(ioDispatcher) {
         val values = ContentValues()
         draft.writeModeledInto(values)
-        with(OpaqueColumns) { opaque.mergeInto(values) }
         val id = draft.eventId
         if (id == null) {
+            with(OpaqueColumns) { opaque.mergeInto(values) }
             val uri = resolver.insert(Events.CONTENT_URI, values)
                 ?: error("provider refused event insert")
             stampChange()
