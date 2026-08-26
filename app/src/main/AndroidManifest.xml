@@ -11,6 +11,13 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
 
+    <!-- Family theme-sync. XX-Launcher sendBroadcast()s with this signature
+         permission; uses-permission is required to receive it. -->
+    <permission
+        android:name="com.piercingxx.xxlauncher.permission.THEME_SYNC"
+        android:protectionLevel="signature"/>
+    <uses-permission android:name="com.piercingxx.xxlauncher.permission.THEME_SYNC"/>
+
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
@@ -125,7 +132,8 @@
              can do is pick another valid preset — no data, no network). -->
         <receiver
             android:name=".widget.ThemeSyncReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.piercingxx.xxlauncher.permission.THEME_SYNC">
             <intent-filter>
                 <action android:name="xx.launcher.THEME_CHANGED"/>
             </intent-filter>
