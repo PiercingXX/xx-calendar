@@ -1,11 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Dark-only AMOLED ground (design §7): ink everywhere, no light mode. -->
-    <style name="Theme.XxCalendar" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.XxCalendar" parent="android:Theme.Material.NoActionBar" tools:targetApi="31">
         <item name="android:windowBackground">@color/pxx_ink</item>
         <item name="android:colorBackground">@color/pxx_ink</item>
         <item name="android:statusBarColor">@color/pxx_ink</item>
         <item name="android:navigationBarColor">@color/pxx_ink</item>
         <item name="android:windowLightStatusBar">false</item>
+
+        <!-- The Android 12+ starting window. The platform draws one on every
+             cold start and offers no way to refuse it; its defaults stamp the
+             launcher icon over a ground it derives from the theme. "Ink
+             everywhere" has to include the frame before the first frame, so:
+             ink ground, transparent icon, and the icon-background and branding
+             slots pinned shut so nothing can be drawn into them either. -->
+        <item name="android:windowSplashScreenBackground">@color/pxx_ink</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+        <item name="android:windowSplashScreenBrandingImage">@null</item>
     </style>
 </resources>
