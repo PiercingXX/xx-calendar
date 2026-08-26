@@ -44,14 +44,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.rememberDrawerState
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -95,7 +94,6 @@ import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.ui.day.DayScreen
 import com.piercingxx.calendar.ui.detail.DetailSheet
-import com.piercingxx.calendar.ui.drawer.CalendarDrawer
 import com.piercingxx.calendar.ui.editor.EditorScreen
 import com.piercingxx.calendar.ui.month.MonthScreen
 import com.piercingxx.calendar.ui.schedule.ScheduleScreen
@@ -401,8 +399,9 @@ private fun PermissionGate(
 /**
  * The chrome every screen shares (design §8.1): top bar with a tappable
  * month/year opening the mini-month picker, a Today button only when off
- * today, one FAB with one action, and the calendar drawer. No bottom
- * navigation.
+ * today, one FAB with one action, and the overflow for views / calendars /
+ * settings. No bottom navigation and no swipe-open drawer — horizontal
+ * swipes move the visible day, week, or month.
  */
 @Composable
 private fun AppShell(
@@ -414,7 +413,6 @@ private fun AppShell(
     val navController = rememberNavController()
     val context = LocalContext.current
     val colors = LocalCalendarColors.current
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
     // The schedule window lives at chrome level so the top bar (Today, the
@@ -578,24 +576,20 @@ private fun AppShell(
         return
     }
 
-    ModalNavigationDrawer(
+    Scaffold(
         modifier = modifier,
-        drawerState = drawerState,
-        drawerContent = { CalendarDrawer(repository) },
-    ) {
-        Scaffold(
-            containerColor = colors.ink,
-            topBar = { CalendarTopBar(navController, scheduleWindow, settings, settingsStore) },
-            floatingActionButton = {
-                FloatingActionButton(
-                    onClick = { navController.navigate("editor/null-placeholder") },
-                    containerColor = colors.emphasisBg,
-                    contentColor = colors.emphasisFg,
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "New event")
-                }
-            },
-        ) { padding ->
+        containerColor = colors.ink,
+        topBar = { CalendarTopBar(navController, scheduleWindow, settings, settingsStore) },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { navController.navigate("editor/null-placeholder") },
+                containerColor = colors.emphasisBg,
+                contentColor = colors.emphasisFg,
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "New event")
+            }
+        },
+    ) { padding ->
             // §8.6 default view — which, since every top-bar view switch also
             // writes it, is the view the user was last in: launch reopens
             // there. Captured on first composition (this composable only
@@ -733,20 +727,19 @@ private fun AppShell(
                     )
                 }
             }
-        }
+    }
 
-        // 15.7: target-calendar choice for an .ics handed over by a VIEW
-        // intent — the same sheet the Settings import shows.
-        pendingIcsImport?.let { staged ->
-            WritableCalendarPickerSheet(
-                calendars = staged.writableCalendars,
-                onPick = { calendarId ->
-                    pendingIcsImport = null
-                    insertIcsDrafts(calendarId, staged)
-                },
-                onDismiss = { pendingIcsImport = null },
-            )
-        }
+    // 15.7: target-calendar choice for an .ics handed over by a VIEW
+    // intent — the same sheet the Settings import shows.
+    pendingIcsImport?.let { staged ->
+        WritableCalendarPickerSheet(
+            calendars = staged.writableCalendars,
+            onPick = { calendarId ->
+                pendingIcsImport = null
+                insertIcsDrafts(calendarId, staged)
+            },
+            onDismiss = { pendingIcsImport = null },
+        )
     }
 }
 
@@ -786,6 +779,7 @@ private fun CalendarTopBar(
     settingsStore: SettingsStore,
 ) {
     val colors = LocalCalendarColors.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var pickerOpen by remember { mutableStateOf(false) }
@@ -813,7 +807,7 @@ private fun CalendarTopBar(
                 Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted)
             }
             IconButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Default.MoreVert, contentDescription = "Views")
+                Icon(Icons.Default.MoreVert, contentDescription = "More")
             }
             DropdownMenu(
                 expanded = menuOpen,
@@ -843,6 +837,21 @@ private fun CalendarTopBar(
                         },
                     )
                 }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Calendars", style = Body, color = colors.text) },
+                    onClick = {
+                        menuOpen = false
+                        context.startActivity(Intent(context, CalendarsActivity::class.java))
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Settings", style = Body, color = colors.text) },
+                    onClick = {
+                        menuOpen = false
+                        context.startActivity(Intent(context, SettingsActivity::class.java))
+                    },
+                )
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(

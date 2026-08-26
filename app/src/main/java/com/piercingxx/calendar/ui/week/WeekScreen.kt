@@ -44,6 +44,7 @@ import com.piercingxx.calendar.ui.day.initialScrollMinutes
 import com.piercingxx.calendar.ui.day.moveTimedEvent
 import com.piercingxx.calendar.ui.day.resizeTimedEvent
 import com.piercingxx.calendar.ui.day.shortMonth
+import com.piercingxx.calendar.ui.gesture.horizontalSwipeNavigate
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -137,7 +138,15 @@ fun WeekScreen(
         )
     }
 
-    Column(modifier.fillMaxSize().background(colors.ink)) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(colors.ink)
+            .horizontalSwipeNavigate(
+                onPrevious = { state.shiftWeeks(-1) },
+                onNext = { state.shiftWeeks(1) },
+            ),
+    ) {
         WindowNavBar(
             label = "${state.startDate.dayOfMonth} ${shortMonth(state.startDate)} – " +
                 "${state.endDate.dayOfMonth} ${shortMonth(state.endDate)}",

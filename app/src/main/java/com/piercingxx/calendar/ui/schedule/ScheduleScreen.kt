@@ -49,6 +49,7 @@ import com.piercingxx.calendar.core.TimeMath
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
+import com.piercingxx.calendar.ui.gesture.horizontalSwipeNavigate
 import com.piercingxx.calendar.ui.theme.Body
 import com.piercingxx.calendar.ui.theme.CalendarColors
 import com.piercingxx.calendar.ui.theme.EventTitle
@@ -157,6 +158,21 @@ fun ScheduleScreen(
     }
 
     val listState = rememberLazyListState()
+    var focusDate by remember { mutableStateOf<LocalDate?>(null) }
+
+    fun shiftFocus(days: Long) {
+        val next = (focusDate ?: LocalDate.now()).plusDays(days)
+        focusDate = next
+        if (next.isBefore(state.startDate) || next.isAfter(state.endDate)) {
+            state.jumpTo(next)
+        }
+    }
+
+    LaunchedEffect(focusDate, sections) {
+        val target = focusDate ?: return@LaunchedEffect
+        val idx = sections.indexOfFirst { !it.date.isBefore(target) }
+        if (idx >= 0) listState.animateScrollToItem(idx)
+    }
 
     // Infinite scroll both directions: near either edge of the loaded data,
     // grow the window. Keyed items keep the scroll anchored across prepends;
@@ -177,7 +193,11 @@ fun ScheduleScreen(
         modifier = modifier
             .fillMaxSize()
             .background(colors.ink)
-            .clipToBounds(),
+            .clipToBounds()
+            .horizontalSwipeNavigate(
+                onPrevious = { shiftFocus(-1) },
+                onNext = { shiftFocus(1) },
+            ),
     ) {
         when {
             !loadedOnce -> Unit

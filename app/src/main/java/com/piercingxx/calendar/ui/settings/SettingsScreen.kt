@@ -752,7 +752,7 @@ private fun NotificationsWarnRow(onFix: () -> Unit) {
 }
 
 @Composable
-private fun CalendarSettingRow(
+internal fun CalendarSettingRow(
     calendar: CalendarSummary,
     tier: SigilTier?,
     onPickSigil: () -> Unit,
@@ -795,7 +795,7 @@ private fun CalendarSettingRow(
 /** Six glyphs, six tiers (§7.1) — an override writes straight through [SigilStore]. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SigilPickerSheet(
+internal fun SigilPickerSheet(
     current: SigilTier?,
     onPick: (SigilTier) -> Unit,
     onDismiss: () -> Unit,

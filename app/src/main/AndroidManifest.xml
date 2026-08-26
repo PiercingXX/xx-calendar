@@ -75,6 +75,10 @@
             android:name=".SettingsActivity"
             android:exported="false"/>
 
+        <activity
+            android:name=".CalendarsActivity"
+            android:exported="false"/>
+
         <!-- Protected system broadcasts; only the OS can send either action.
              LOCKED_BOOT_COMPLETED is declared for the direct-boot path; WS8
              decides whether the reconciler opts into directBootAware. -->

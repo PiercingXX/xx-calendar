@@ -33,6 +33,7 @@ import com.piercingxx.calendar.detailRoute
 import com.piercingxx.calendar.editorRoute
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
+import com.piercingxx.calendar.ui.gesture.horizontalSwipeNavigate
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import java.time.LocalDate
 import java.time.ZoneId
@@ -127,7 +128,15 @@ fun DayScreen(
         )
     }
 
-    Column(modifier.fillMaxSize().background(colors.ink)) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(colors.ink)
+            .horizontalSwipeNavigate(
+                onPrevious = { state.shift(-1) },
+                onNext = { state.shift(1) },
+            ),
+    ) {
         WindowNavBar(
             label = "${shortDayOfWeek(state.date)} ${state.date.dayOfMonth} ${shortMonth(state.date)}",
             onPrevious = { state.shift(-1) },
