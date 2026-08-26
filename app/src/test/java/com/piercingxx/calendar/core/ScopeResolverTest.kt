@@ -123,7 +123,7 @@ class ScopeResolverTest {
     }
 
     @Test
-    fun `edit this-and-following on UNTIL-bounded parent resets remaining rule end to Never`() {
+    fun `edit this-and-following on UNTIL-bounded parent keeps UNTIL on the remaining rule`() {
         val until = allDayMidnightUtc + 30L * 86_400_000L
         val rule = RRuleModel(frequency = Frequency.WEEKLY, end = EndCondition.Until(until))
 
@@ -137,8 +137,22 @@ class ScopeResolverTest {
         assertEquals(timedInstanceMillis - 1, r.newUntil.untilMillisUtc)
         assertFalse(r.newUntil.dateOnly)
         assertEquals(timedInstanceMillis, r.newRowStartMillis)
+        // The continuation carries "the remaining rule" (§6.3): a bounded
+        // series stays bounded instead of becoming an infinite one.
+        assertEquals(EndCondition.Until(until), r.remainingRule.end)
+        assertEquals(rule, r.remainingRule)
+    }
+
+    @Test
+    fun `edit this-and-following on a never-ending parent stays never-ending`() {
+        val r = ScopeResolver.resolveEdit(
+            ctx(weeklyNever),
+            RecurrenceScope.ThisAndFollowing,
+            inst(),
+            edits,
+        ) as Resolution.SplitParent
+
         assertEquals(EndCondition.Never, r.remainingRule.end)
-        assertEquals(Frequency.WEEKLY, r.remainingRule.frequency)
     }
 
     @Test
@@ -171,7 +185,7 @@ class ScopeResolverTest {
     // ---- §6.3 rows: delete ------------------------------------------------
 
     @Test
-    fun `delete this-instance deletes the generated instance uri letting provider write EXDATE`() {
+    fun `delete this-instance resolves to canceling the tapped occurrence`() {
         val r = ScopeResolver.resolveDelete(ctx(weeklyNever), RecurrenceScope.ThisInstance, inst())
 
         assertEquals(Resolution.DeleteInstanceUri(parentId, timedInstanceMillis), r)

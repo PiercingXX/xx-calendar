@@ -69,8 +69,9 @@ import kotlinx.coroutines.launch
  * the other views. The sigil map loads exactly as in ScheduleScreen (§6.1):
  * persisted map, allocate unseen calendars, persist what is new.
  *
- * [onEventClick] exists so the chrome can route peek taps to the detail sheet;
- * the current call site passes none, so taps stay inert rather than dead-end.
+ * [onEventClick] routes peek taps to the detail sheet, carrying the tapped
+ * occurrence's BEGIN so recurring rows open on the instance actually tapped
+ * (15.1 + 14.1); DayPeek forwards it straight from the tapped row.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -78,7 +79,7 @@ fun MonthScreen(
     modifier: Modifier = Modifier,
     showWeekNumbers: Boolean = false,
     firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY,
-    onEventClick: (Long) -> Unit = {},
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit = { _, _ -> },
 ) {
     val colors = LocalCalendarColors.current
     val context = LocalContext.current
@@ -204,13 +205,16 @@ fun MonthScreen(
             )
         }
         if (peekSelected != null) {
+            val peekEvents = monthCache[YearMonth.from(peekSelected)]?.eventsByDate
+                ?.get(peekSelected).orEmpty()
             DayPeek(
                 date = peekSelected,
-                events = monthCache[YearMonth.from(peekSelected)]?.eventsByDate
-                    ?.get(peekSelected).orEmpty(),
+                events = peekEvents,
                 tiersByCalendarId = tiersByCalendarId,
                 nowMillis = nowMillis,
                 zone = zone,
+                // The peek row carries the tapped occurrence's BEGIN itself
+                // (14.1); null only if the cache moved mid-tap.
                 onEventClick = onEventClick,
                 modifier = Modifier
                     .fillMaxWidth()

@@ -83,10 +83,14 @@ import androidx.navigation.navArgument
 import com.piercingxx.calendar.alarm.ReminderPlanner
 import com.piercingxx.calendar.alarm.ReminderReconciler
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.calendar.CalendarSummary
+import com.piercingxx.calendar.calendar.LocalCalendarBootstrap
 import com.piercingxx.calendar.settings.AppBackground
 import com.piercingxx.calendar.settings.AppFont
 import com.piercingxx.calendar.settings.DefaultView
 import com.piercingxx.calendar.settings.Density
+import com.piercingxx.calendar.settings.IcsCodec
+import com.piercingxx.calendar.settings.IcsExchange
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.ui.day.DayScreen
@@ -96,6 +100,10 @@ import com.piercingxx.calendar.ui.editor.EditorScreen
 import com.piercingxx.calendar.ui.month.MonthScreen
 import com.piercingxx.calendar.ui.schedule.ScheduleScreen
 import com.piercingxx.calendar.ui.schedule.ScheduleWindowState
+import com.piercingxx.calendar.ui.settings.MAX_IMPORT_BYTES
+import com.piercingxx.calendar.ui.settings.STATUS_CANCELED_INT
+import com.piercingxx.calendar.ui.settings.WritableCalendarPickerSheet
+import com.piercingxx.calendar.ui.settings.readBounded
 import com.piercingxx.calendar.ui.theme.Body
 import com.piercingxx.calendar.ui.theme.DayNumeral
 import com.piercingxx.calendar.ui.theme.MonthHeader
@@ -111,7 +119,9 @@ import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.TextStyle as JavaTextStyle
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -183,8 +193,12 @@ internal sealed interface DeepLink {
     /** content://com.android.calendar/time/<epoch-millis> — show that day. */
     data class Time(val epochMillis: Long) : DeepLink
 
-    /** ACTION_VIEW with type text/calendar — point the user at the import flow. */
-    data object ImportIcs : DeepLink
+    /**
+     * ACTION_VIEW with type text/calendar (15.7). [uri] is the file the OS
+     * already handed over; it is parsed and imported right here rather than
+     * discarded with a "pick the file from there" detour.
+     */
+    data class ImportIcs(val uri: Uri?) : DeepLink
 }
 
 /**
@@ -193,7 +207,7 @@ internal sealed interface DeepLink {
  */
 internal fun parseDeepLink(intent: Intent?): DeepLink? = runCatching {
     if (intent?.action != Intent.ACTION_VIEW) return@runCatching null
-    if (intent.type == "text/calendar") return@runCatching DeepLink.ImportIcs
+    if (intent.type == "text/calendar") return@runCatching DeepLink.ImportIcs(intent.data)
     val data = intent.data ?: return@runCatching null
     if (data.host != "com.android.calendar") return@runCatching null
     timeLinkMillis(data)?.let(DeepLink::Time)
@@ -214,6 +228,35 @@ private const val ROUTE_SCHEDULE = "schedule"
 private const val ROUTE_DAY = "day"
 private const val ROUTE_WEEK = "week"
 private const val ROUTE_MONTH = "month"
+
+/**
+ * Navigation routes carrying occurrence identity (14.1). Every tap knows the
+ * expanded instance's BEGIN; `?start=` threads it to DetailSheet and
+ * EditorScreen so This-instance / This-and-following stamp the tapped
+ * occurrence rather than the series anchor. A missing or unparseable start
+ * falls back to the parent DTSTART — the pre-14.1 behavior — never a crash.
+ * Internal so the mapping can be pinned by JVM tests.
+ */
+internal fun detailRoute(eventId: Long, instanceStartMillis: Long?): String =
+    if (instanceStartMillis == null) "detail/$eventId" else "detail/$eventId?start=$instanceStartMillis"
+
+internal fun editorRoute(
+    eventId: Long,
+    instanceStartMillis: Long?,
+    duplicate: Boolean = false,
+    dropStartMillis: Long? = null,
+    dropEndMillis: Long? = null,
+): String = buildString {
+    append("editor/").append(eventId)
+    append("?duplicate=").append(if (duplicate) "1" else "")
+    if (instanceStartMillis != null) append("&start=").append(instanceStartMillis)
+    if (dropStartMillis != null) append("&dropStart=").append(dropStartMillis)
+    if (dropEndMillis != null) append("&dropEnd=").append(dropEndMillis)
+}
+
+/** Nav query params arrive as "" when defaulted; only real millis count. */
+internal fun parseNavMillis(raw: String?): Long? =
+    raw?.takeIf { it.isNotEmpty() }?.toLongOrNull()
 
 /**
  * §8.6 `default view` -> navigation route opened at launch. Internal (not
@@ -245,8 +288,11 @@ internal fun AppRoot(
 
     val grantLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        hasAccess = grants.isNotEmpty() && grants.values.all { it }
+    ) {
+        // 15.3: the launcher also asks for POST_NOTIFICATIONS; only calendar
+        // access gates entry. A notification refusal must never lock the user
+        // out of the app — Settings carries the warn row for that instead.
+        hasAccess = hasCalendarAccess(context)
         requestedOnce = true
     }
 
@@ -263,10 +309,14 @@ internal fun AppRoot(
         PermissionGate(
             showSettingsExit = permanentlyDenied,
             onGrant = {
+                // One dialog, one tap (design §10): reminders ride along with
+                // the calendar grant. Below API 33 the framework grants it at
+                // install time, so including it here is always safe.
                 grantLauncher.launch(
                     arrayOf(
                         Manifest.permission.READ_CALENDAR,
                         Manifest.permission.WRITE_CALENDAR,
+                        Manifest.permission.POST_NOTIFICATIONS,
                     ),
                 )
             },
@@ -316,8 +366,9 @@ private fun PermissionGate(
             Text(
                 "XX-Calendar renders your days through Android's calendar " +
                     "provider. It needs calendar access to show or store " +
-                    "anything.\n\nThere is nothing else to set up - and no " +
-                    "way for anything to leave this device.",
+                    "anything, and on Android 13+ permission to post its " +
+                    "reminder notifications.\n\nThere is nothing else to set " +
+                    "up - and no way for anything to leave this device.",
                 style = Body,
                 color = colors.text,
             )
@@ -364,11 +415,114 @@ private fun AppShell(
     val context = LocalContext.current
     val colors = LocalCalendarColors.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
 
     // The schedule window lives at chrome level so the top bar (Today, the
     // mini-month picker) and the list act on one shared state.
     val scheduleWindow = remember { ScheduleWindowState() }
     val repository = remember { CalendarRepository(context.contentResolver) }
+
+    // -------------------------------------------------- 15.7 .ics VIEW import
+    // The URI the OS handed over is parsed here through the same bounded
+    // reader / codec / target-picker pipeline as Settings' SAF import (§9),
+    // instead of being discarded with a "pick the file from there" detour.
+    var icsBusy by remember { mutableStateOf(false) }
+    var pendingIcsImport by remember { mutableStateOf<PendingIcsImport?>(null) }
+
+    fun reportIcsFailure(t: Throwable) {
+        Toast.makeText(context, "✗ ${t.message ?: "operation failed"}", Toast.LENGTH_LONG).show()
+    }
+
+    fun insertIcsDrafts(calendarId: Long, staged: PendingIcsImport) {
+        icsBusy = true
+        scope.launch {
+            try {
+                val inserted = withContext(Dispatchers.IO) {
+                    IcsExchange.insertDrafts(context.contentResolver, calendarId, staged.drafts)
+                }
+                Toast.makeText(
+                    context,
+                    "✓ " + buildList {
+                        add("$inserted imported")
+                        if (staged.duplicates > 0) add("${staged.duplicates} duplicates skipped")
+                        if (staged.canceled > 0) add("${staged.canceled} canceled skipped")
+                    }.joinToString(" · "),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } catch (t: Throwable) {
+                reportIcsFailure(t)
+            } finally {
+                icsBusy = false
+            }
+        }
+    }
+
+    fun beginIcsImport(uri: Uri) {
+        if (icsBusy) return
+        icsBusy = true
+        scope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.readBounded(uri, MAX_IMPORT_BYTES)
+                }
+                val knownUids = withContext(Dispatchers.IO) {
+                    // Graceful degradation preserved, as in Settings: if the
+                    // UID read fails, intra-file deduplication still applies.
+                    runCatching { IcsExchange.knownUids(context.contentResolver) }
+                        .getOrDefault(emptySet())
+                }
+                val parsed = withContext(Dispatchers.IO) { IcsCodec.parse(bytes, knownUids) }
+                val candidates = parsed.events.filter { it.status != STATUS_CANCELED_INT }
+                val canceledCount = parsed.events.size - candidates.size
+                val writable = repository.calendars().filter { it.isWritable }
+                when {
+                    candidates.isEmpty() -> Toast.makeText(
+                        context,
+                        listOfNotNull(
+                            "nothing to import",
+                            parsed.skippedDuplicateUids
+                                .takeIf { it > 0 }?.let { "$it duplicates" },
+                            canceledCount.takeIf { it > 0 }?.let { "$it canceled" },
+                        ).joinToString(" — "),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+
+                    writable.isEmpty() ->
+                        reportIcsFailure(IllegalStateException("no writable calendar"))
+
+                    // The same target-calendar choice the Settings flow makes;
+                    // never guessed on the user's behalf behind a system tap.
+                    else -> pendingIcsImport = PendingIcsImport(
+                        drafts = candidates,
+                        writableCalendars = writable,
+                        duplicates = parsed.skippedDuplicateUids,
+                        canceled = canceledCount,
+                    )
+                }
+            } catch (t: Throwable) {
+                reportIcsFailure(t)
+            } finally {
+                icsBusy = false
+            }
+        }
+    }
+
+    // §4.4 local-calendar bootstrap: this composable sits below the permission
+    // gate, so running it here means "calendar access granted". Idempotent (it
+    // no-ops when a writable calendar exists); a fresh install without DAVx⁵
+    // gets the one local calendar the editor's Save needs. The editor and .ics
+    // import both snapshot the writable list once — wait for the insert so
+    // they cannot stick on "no calendar" by racing it.
+    var calendarReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val id = runCatching { LocalCalendarBootstrap.ensureWritableCalendar(context) }
+            .getOrNull()
+        if (id == null) {
+            Toast.makeText(context, "✗ could not create a local calendar", Toast.LENGTH_LONG)
+                .show()
+        }
+        calendarReady = true
+    }
 
     // §8.6 all-day notification: mirror the setting into the planner (whose
     // call path this file cannot re-route) and re-reconcile so already-planned
@@ -383,7 +537,10 @@ private fun AppShell(
     // §12 deep links are consumed only here, below the permission gate: no
     // external URI can navigate or read anything before calendar access is
     // granted. A link that arrives pre-grant simply waits in [pending].
-    LaunchedEffect(pending.value) {
+    // calendarReady is a key so an .ics VIEW does not consume the URI before
+    // the local calendar exists.
+    LaunchedEffect(pending.value, calendarReady) {
+        if (!calendarReady) return@LaunchedEffect
         when (val link = pending.value ?: return@LaunchedEffect) {
             is DeepLink.Time -> {
                 scheduleWindow.jumpTo(
@@ -397,20 +554,28 @@ private fun AppShell(
                     navController.navigate(ROUTE_SCHEDULE) { launchSingleTop = true }
                 }
             }
-            DeepLink.ImportIcs -> {
-                // Deferred honesty: WS10's import lives inside SettingsScreen
-                // behind a SAF picker and cannot accept a foreign URI yet, so
-                // open Settings — where "import .ics" lives — rather than
-                // wiring the file through.
-                context.startActivity(Intent(context, SettingsActivity::class.java))
-                Toast.makeText(
-                    context,
-                    ".ics import lives in Settings - pick the file from there",
-                    Toast.LENGTH_LONG,
-                ).show()
+            is DeepLink.ImportIcs -> {
+                // 15.7: the file is already in hand — import it. A type-only
+                // VIEW with no data cannot be read; say so rather than
+                // pretending the import happened.
+                val uri = link.uri
+                if (uri == null) {
+                    Toast.makeText(
+                        context,
+                        "✗ no .ics file was handed over",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    beginIcsImport(uri)
+                }
             }
         }
         pending.value = null
+    }
+
+    if (!calendarReady) {
+        Box(modifier.fillMaxSize().background(colors.ink))
+        return
     }
 
     ModalNavigationDrawer(
@@ -447,7 +612,11 @@ private fun AppShell(
             ) {
                 composable(ROUTE_SCHEDULE) {
                     ScheduleScreen(
-                        onEventClick = { id -> navController.navigate("detail/$id") },
+                        // Schedule taps thread the tapped occurrence's BEGIN
+                        // like every other view (handoff note a / 14.1).
+                        onEventClick = { id, start ->
+                            navController.navigate(detailRoute(id, start))
+                        },
                         modifier = Modifier.fillMaxSize(),
                         state = scheduleWindow,
                     )
@@ -461,6 +630,8 @@ private fun AppShell(
                 composable(ROUTE_WEEK) {
                     WeekScreen(
                         Modifier.fillMaxSize(),
+                        // §8.6 start day of week (15.6), same as MonthScreen.
+                        firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
                         onNavigate = { navController.navigate(it) },
                     )
                 }
@@ -469,23 +640,42 @@ private fun AppShell(
                         Modifier.fillMaxSize(),
                         showWeekNumbers = settings.weekNumbers,
                         firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
+                        // Peek taps open the detail sheet (15.1), carrying the
+                        // tapped occurrence's begin (14.1).
+                        onEventClick = { id, start ->
+                            navController.navigate(detailRoute(id, start))
+                        },
                     )
                 }
                 // WS7: the real detail sheet. Ids arrive as strings and are
                 // parsed defensively - a malformed id renders nothing rather
-                // than crashing navigation.
+                // than crashing navigation. ?start= carries the tapped
+                // occurrence's begin (14.1); absent, DetailSheet falls back to
+                // the series anchor.
                 composable(
-                    route = "detail/{eventId}",
-                    arguments = listOf(navArgument("eventId") { type = NavType.StringType }),
+                    route = "detail/{eventId}?start={start}",
+                    arguments = listOf(
+                        navArgument("eventId") { type = NavType.StringType },
+                        navArgument("start") {
+                            type = NavType.StringType
+                            defaultValue = ""
+                        },
+                    ),
                 ) { entry ->
                     val eventId = entry.arguments?.getString("eventId")?.toLongOrNull()
                     if (eventId != null) {
                         DetailSheet(
                             eventId = eventId,
+                            instanceStartMillis =
+                                parseNavMillis(entry.arguments?.getString("start")),
                             repository = repository,
                             onClose = { navController.popBackStack() },
-                            onEdit = { id -> navController.navigate("editor/$id") },
-                            onDuplicate = { id -> navController.navigate("editor/$id?duplicate=1") },
+                            onEdit = { id, start ->
+                                navController.navigate(editorRoute(id, start))
+                            },
+                            onDuplicate = { id, start ->
+                                navController.navigate(editorRoute(id, start, duplicate = true))
+                            },
                         )
                     }
                 }
@@ -506,11 +696,25 @@ private fun AppShell(
                 }
                 // Edit an existing row; ?duplicate=1 loads fields but strips
                 // exception linkage so the save inserts a fresh event.
+                // ?start= prefills from the tapped occurrence (14.1).
                 composable(
-                    route = "editor/{eventId}?duplicate={duplicate}",
+                    route = "editor/{eventId}?duplicate={duplicate}&start={start}" +
+                        "&dropStart={dropStart}&dropEnd={dropEnd}",
                     arguments = listOf(
                         navArgument("eventId") { type = NavType.StringType },
                         navArgument("duplicate") {
+                            type = NavType.StringType
+                            defaultValue = ""
+                        },
+                        navArgument("start") {
+                            type = NavType.StringType
+                            defaultValue = ""
+                        },
+                        navArgument("dropStart") {
+                            type = NavType.StringType
+                            defaultValue = ""
+                        },
+                        navArgument("dropEnd") {
                             type = NavType.StringType
                             defaultValue = ""
                         },
@@ -519,13 +723,45 @@ private fun AppShell(
                     EditorScreen(
                         eventId = entry.arguments?.getString("eventId")?.toLongOrNull(),
                         duplicate = entry.arguments?.getString("duplicate") == "1",
+                        instanceStartMillis =
+                            parseNavMillis(entry.arguments?.getString("start")),
+                        dropStartMillis =
+                            parseNavMillis(entry.arguments?.getString("dropStart")),
+                        dropEndMillis =
+                            parseNavMillis(entry.arguments?.getString("dropEnd")),
                         onClose = { navController.popBackStack() },
                     )
                 }
             }
         }
+
+        // 15.7: target-calendar choice for an .ics handed over by a VIEW
+        // intent — the same sheet the Settings import shows.
+        pendingIcsImport?.let { staged ->
+            WritableCalendarPickerSheet(
+                calendars = staged.writableCalendars,
+                onPick = { calendarId ->
+                    pendingIcsImport = null
+                    insertIcsDrafts(calendarId, staged)
+                },
+                onDismiss = { pendingIcsImport = null },
+            )
+        }
     }
 }
+
+/**
+ * Events parsed from an OS-handed .ics VIEW, awaiting a target calendar:
+ * the drafts plus what was skipped so the toast can say so. Mirrors
+ * SettingsScreen's PendingImport; kept separate because it also carries the
+ * writable-calendar list this screen resolved.
+ */
+private data class PendingIcsImport(
+    val drafts: List<IcsCodec.IcsEventDraft>,
+    val writableCalendars: List<CalendarSummary>,
+    val duplicates: Int,
+    val canceled: Int,
+)
 
 /**
  * The top-bar view switcher's menu, keyed by [DefaultView] rather than raw

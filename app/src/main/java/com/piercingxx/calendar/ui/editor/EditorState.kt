@@ -11,14 +11,20 @@ import com.piercingxx.calendar.calendar.LoadedEvent
 import com.piercingxx.calendar.core.EndCondition
 import com.piercingxx.calendar.core.EventFieldEdits
 import com.piercingxx.calendar.core.Frequency
+import com.piercingxx.calendar.core.InstanceRef
+import com.piercingxx.calendar.core.RecurringEventContext
+import com.piercingxx.calendar.core.RecurrenceScope
+import com.piercingxx.calendar.core.Resolution
 import com.piercingxx.calendar.core.RRuleModel
 import com.piercingxx.calendar.core.RuleParse
+import com.piercingxx.calendar.core.ScopeResolver
 import com.piercingxx.calendar.core.TimeMath
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
@@ -117,8 +123,11 @@ data class EditorForm(
             if (draft.allDay) {
                 startDate = TimeMath.storageToAllDayDate(draft.startMillis)
                 startTime = null
-                // DTEND on all-day rows is exclusive (provider contract).
-                endDate = draft.endMillis?.let { TimeMath.storageToAllDayDate(it).minusDays(1) } ?: startDate
+                // Exclusive end: DTEND if present, otherwise DURATION (the
+                // provider recurrence shape writeExtentInto normalizes to).
+                endDate = draft.allDayExclusiveEndMillis()?.let {
+                    TimeMath.storageToAllDayDate(it).minusDays(1)
+                } ?: startDate
                 endTime = null
             } else {
                 val start = Instant.ofEpochMilli(draft.startMillis).atZone(zone)
@@ -159,12 +168,15 @@ internal val ZONE_UTC: ZoneId = ZoneId.of("UTC")
 private const val AVAILABILITY_FREE = 1
 
 /**
- * Form -> provider draft. Timed recurring rows carry DURATION instead of
- * DTEND; all-day recurring rows keep an exclusive DTEND so multi-day spans
- * survive expansion; all-day rows are stored at UTC midnight (design §6.4).
- * When [original] is present its opaque-linked modeled fields (rdate/exdate/
- * colorKey/original linkage) round-trip untouched — except in duplicate mode,
- * which strips every linkage so the save inserts a fresh independent event.
+ * Form -> provider draft. Recurring rows (timed and all-day) carry DURATION
+ * instead of DTEND, matching the provider recurrence shape; all-day rows are
+ * stored at UTC midnight (design §6.4). An All-events save opened at a later
+ * occurrence diffs against a duration-shaped baseline, so a title-only save
+ * must not emit an exclusive DTEND that writeExtentInto would turn into a
+ * longer P<n>D. When [original] is present its opaque-linked modeled fields
+ * (rdate/exdate/colorKey/original linkage) round-trip untouched — except in
+ * duplicate mode, which strips every linkage so the save inserts a fresh
+ * independent event.
  */
 fun buildDraft(
     form: EditorForm,
@@ -185,19 +197,25 @@ fun buildDraft(
         endMillis = LocalDateTime.of(form.endDate, form.endTime ?: LocalTime.MIDNIGHT)
             .atZone(deviceZone).toInstant().toEpochMilli()
     }
+    val durationShaped = recurring && !form.ruleUnreadable
     val base = original?.draft
     val keepLinkage = base != null && !duplicate
     return EventDraft(
         calendarId = form.calendarId,
         startMillis = startMillis,
-        endMillis = if (recurring && !form.allDay) null else endMillis,
+        endMillis = if (durationShaped) null else endMillis,
         eventTimezone = if (form.allDay) "UTC" else form.timezone,
         eventId = if (keepLinkage) base!!.eventId else null,
         title = form.title.trim().ifEmpty { null },
         location = form.location.trim().ifEmpty { null },
         description = form.description.trim().ifEmpty { null },
-        duration = if (recurring && !form.allDay && !form.ruleUnreadable) {
-            formatDuration(startMillis, endMillis)
+        duration = if (durationShaped) {
+            if (form.allDay) {
+                val days = ChronoUnit.DAYS.between(form.startDate, form.endDate) + 1
+                "P${days.coerceAtLeast(1)}D"
+            } else {
+                formatDuration(startMillis, endMillis!!)
+            }
         } else {
             null
         },
@@ -242,7 +260,144 @@ fun diffEdits(original: EventDraft, updated: EventDraft): EventFieldEdits {
         eventEndTimezone = changed(updated.eventEndTimezone, original.eventEndTimezone),
         clearEventEndTimezone = updated.eventEndTimezone == null && original.eventEndTimezone != null,
         availability = changed(updated.availability, original.availability),
+        calendarId = changed(updated.calendarId, original.calendarId),
     )
+}
+
+/**
+ * The loaded SERIES row re-anchored at the tapped occurrence (14.1). Every
+ * view taps an expanded instance whose BEGIN differs from the parent's
+ * DTSTART; prefilling the editor from the raw row shows occurrence #1's
+ * times no matter which block was tapped, and This-instance / This-and-
+ * following would then stamp occurrence #1. Shifting start (and any absolute
+ * end) by the same delta keeps DURATION rows intact and gives [diffEdits] a
+ * baseline where untouched times produce no diff — so an all-events save can
+ * never move the series anchor as a side effect of opening occurrence #3.
+ *
+ * Non-recurring rows are returned untouched: their single instance IS the
+ * anchor, and a stray start param must not move the row.
+ */
+internal fun LoadedEvent.atOccurrence(instanceStartMillis: Long?): LoadedEvent {
+    val tapped = instanceStartMillis ?: return this
+    val shifted = draft.atOccurrence(tapped)
+    // No-op shifts keep the same instance — callers rely on referential
+    // stability for untouched rows.
+    return if (shifted == draft) this else copy(draft = shifted)
+}
+
+/**
+ * Draft-level shift behind [LoadedEvent.atOccurrence]; shared with the detail
+ * sheet's display path so a tapped occurrence renders its own times (14.1).
+ * Non-recurring rows are their own anchor and never shift; an already-equal
+ * start is identity.
+ */
+internal fun EventDraft.atOccurrence(instanceStartMillis: Long): EventDraft {
+    if (rrule == null || instanceStartMillis == startMillis) return this
+    val delta = instanceStartMillis - startMillis
+    return copy(
+        startMillis = instanceStartMillis,
+        endMillis = endMillis?.let { it + delta },
+    )
+}
+
+/**
+ * Exclusive all-day end in storage millis. Recurring all-day rows are stored
+ * as `DURATION=P<n>D` with `DTEND` null; without this, fromLoaded / the
+ * detail sheet treat a 3-day span as one day and the next save writes `P1D`.
+ */
+internal fun EventDraft.allDayExclusiveEndMillis(): Long? {
+    if (!allDay) return endMillis
+    endMillis?.let { return it }
+    val durationMillis = parseDuration(duration) ?: return null
+    if (durationMillis <= 0L) return null
+    return startMillis + durationMillis
+}
+
+/**
+ * All-events saves opened at a non-first occurrence must SHIFT the series
+ * pattern, not move its anchor. The diff is measured against the occurrence-
+ * anchored baseline ([atOccurrence]), so a time edit arrives as an ABSOLUTE
+ * new start/end in the tapped slot's frame; applying those to the parent row
+ * would drag DTSTART to the tapped slot and truncate every earlier occurrence.
+ * When the baseline sits away from the anchor and the times were actually
+ * edited, the absolutes become a DELTA against the true anchor:
+ *
+ *     newParentStart = parentStart + (updatedStart - baselineStart)
+ *
+ * and likewise for an absolute end; duration edits travel verbatim because a
+ * length is anchor-free. Non-time edits pass through untouched — they already
+ * merge onto the parent correctly. ScopeResolver stays pure: this is the
+ * editor's correction of its own baseline before resolution is applied.
+ */
+internal fun EventFieldEdits.reanchoredToSeries(
+    parent: EventDraft,
+    baseline: EventDraft,
+    updated: EventDraft,
+): EventFieldEdits {
+    if (baseline.startMillis == parent.startMillis) return this
+    val timeTouched = startMillis != null || endMillis != null ||
+        clearEndMillis || duration != null || clearDuration
+    if (!timeTouched) return this
+    return copy(
+        startMillis =
+            startMillis?.let { parent.startMillis + (updated.startMillis - baseline.startMillis) },
+        endMillis = when {
+            endMillis == null -> null
+
+            parent.endMillis == null || baseline.endMillis == null || updated.endMillis == null ->
+                // Extent-shape change (e.g. timed -> all-day): no common frame
+                // to delta within, keep the absolute.
+                endMillis
+
+            else -> parent.endMillis + (updated.endMillis - baseline.endMillis)
+        },
+    )
+}
+
+/**
+ * The §6.3 edit resolution for a scoped save of [original]: diff against the
+ * occurrence-anchored baseline so untouched times produce no diff (an
+ * all-events save must not drag the anchor as a side effect of opening
+ * occurrence #3), then re-anchor absolute time edits onto the series start so
+ * an all-events save shifts the pattern instead of moving DTSTART. This-
+ * instance / this-and-following resolutions are untouched — exception rows and
+ * split continuations WANT the tapped slot's absolutes. Extracted from
+ * [com.piercingxx.calendar.ui.editor.EditorScreen] so the pipeline is
+ * directly unit-testable.
+ */
+internal fun resolveScopedEdit(
+    original: LoadedEvent,
+    rule: RRuleModel,
+    instanceStartMillis: Long?,
+    scope: RecurrenceScope,
+    updated: EventDraft,
+): Resolution {
+    val baseline = original.atOccurrence(instanceStartMillis)
+    val resolution = ScopeResolver.resolveEdit(
+        context = RecurringEventContext(
+            parentEventId = original.eventId,
+            rule = rule,
+            startMillis = baseline.draft.startMillis,
+            allDay = baseline.draft.allDay,
+        ),
+        scope = scope,
+        instance = InstanceRef(
+            original.eventId,
+            instanceStartMillis ?: original.draft.startMillis,
+        ),
+        edits = diffEdits(baseline.draft, updated),
+    )
+    return if (resolution is Resolution.UpdateParentRow) {
+        resolution.copy(
+            edits = resolution.edits.reanchoredToSeries(
+                parent = original.draft,
+                baseline = baseline.draft,
+                updated = updated,
+            ),
+        )
+    } else {
+        resolution
+    }
 }
 
 // ---- RFC 5545 DURATION subset ---------------------------------------------

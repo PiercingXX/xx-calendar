@@ -52,8 +52,16 @@ class OpaqueColumnsTest {
         assertTrue(OpaqueColumns.isPreservable(Events.ORGANIZER))
         assertTrue(OpaqueColumns.isPreservable(Events.CUSTOM_APP_PACKAGE))
         assertTrue(OpaqueColumns.isPreservable(Events.CUSTOM_APP_URI))
-        assertTrue(OpaqueColumns.isPreservable("sync_data1"))
-        assertTrue(OpaqueColumns.isPreservable("sync_data10"))
+
+        // Sync-adapter-owned blobs (DAVx⁵ href/etag) must never be held or
+        // written back — CalendarProvider2 rejects them from a normal client.
+        for (column in listOf(
+            Events.SYNC_DATA1, Events.SYNC_DATA2, Events.SYNC_DATA3, Events.SYNC_DATA4,
+            Events.SYNC_DATA5, Events.SYNC_DATA6, Events.SYNC_DATA7, Events.SYNC_DATA8,
+            Events.SYNC_DATA9, Events.SYNC_DATA10,
+        )) {
+            assertFalse("SYNC_DATA column $column must not be preservable", OpaqueColumns.isPreservable(column))
+        }
 
         assertFalse(OpaqueColumns.isPreservable(Events._ID))
         assertFalse(OpaqueColumns.isPreservable(Events.ACCOUNT_NAME))
@@ -97,7 +105,7 @@ class OpaqueColumnsTest {
                 setOf(
                     Events.ACCESS_LEVEL, Events.GUESTS_CAN_MODIFY, Events.ORGANIZER,
                     Events.CUSTOM_APP_PACKAGE, Events.CUSTOM_APP_URI,
-                    "sync_data1", "sync_data2", "confidence", "payload",
+                    "confidence", "payload",
                 ),
             ),
         )
@@ -107,15 +115,17 @@ class OpaqueColumnsTest {
             OpaqueColumns.RawValue.Text("airline@example.com"),
             held.values[Events.ORGANIZER],
         )
-        assertEquals(OpaqueColumns.RawValue.Null, held.values["sync_data2"])
         assertEquals(OpaqueColumns.RawValue.Real(0.75), held.values["confidence"])
         assertEquals(OpaqueColumns.RawValue.Blob(payload), held.values["payload"])
 
-        // Modeled and provider-managed columns are structurally excluded.
+        // Modeled, provider-managed, and sync-adapter-owned columns are
+        // structurally excluded.
         assertFalse(held.values.containsKey(Events.TITLE))
         assertFalse(held.values.containsKey("_id"))
         assertFalse(held.values.containsKey(Events.IS_ORGANIZER))
         assertFalse(held.values.containsKey(Events.DIRTY))
+        assertFalse(held.values.containsKey("sync_data1"))
+        assertFalse(held.values.containsKey("sync_data2"))
     }
 
     @Test
@@ -150,7 +160,7 @@ class OpaqueColumnsTest {
                 Events.ACCESS_LEVEL to OpaqueColumns.RawValue.Integer(2L),
                 "ratio" to OpaqueColumns.RawValue.Real(0.5),
                 Events.ORGANIZER to OpaqueColumns.RawValue.Text("o@x.com"),
-                "sync_data4" to OpaqueColumns.RawValue.Null,
+                "custom_note" to OpaqueColumns.RawValue.Null,
                 "payload" to OpaqueColumns.RawValue.Blob(bytes),
             ),
         )
@@ -161,8 +171,8 @@ class OpaqueColumnsTest {
         assertEquals(2L, values.get(Events.ACCESS_LEVEL))
         assertEquals(0.5, values.get("ratio") as Double, 0.0)
         assertEquals("o@x.com", values.getAsString(Events.ORGANIZER))
-        assertTrue(values.containsKey("sync_data4")) // putNull, not silently dropped
-        assertNullValue(values.get("sync_data4"))
+        assertTrue(values.containsKey("custom_note")) // putNull, not silently dropped
+        assertNullValue(values.get("custom_note"))
         assertArrayEquals(bytes, values.getAsByteArray("payload"))
     }
 
@@ -174,12 +184,13 @@ class OpaqueColumnsTest {
     fun `pure applyTo round-trips through preserveAll`() {
         val source: Map<String, OpaqueColumns.RawValue> = mapOf(
             Events.TITLE to OpaqueColumns.RawValue.Text("modeled — dropped"),
-            "sync_data1" to OpaqueColumns.RawValue.Text("keep"),
+            "sync_data1" to OpaqueColumns.RawValue.Text("sync-owned — dropped"),
+            Events.CUSTOM_APP_URI to OpaqueColumns.RawValue.Text("keep"),
         )
         val out = mutableMapOf<String, OpaqueColumns.RawValue>()
 
         OpaqueColumns.applyTo(OpaqueColumns.preserveAll(source), out)
 
-        assertThat(out, `is`(mapOf("sync_data1" to OpaqueColumns.RawValue.Text("keep"))))
+        assertThat(out, `is`(mapOf(Events.CUSTOM_APP_URI to OpaqueColumns.RawValue.Text("keep"))))
     }
 }

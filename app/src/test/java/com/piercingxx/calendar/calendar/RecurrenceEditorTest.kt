@@ -1,6 +1,7 @@
 package com.piercingxx.calendar.calendar
 
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.database.MatrixCursor
 import android.provider.CalendarContract.Events
@@ -33,7 +34,7 @@ import org.robolectric.RobolectricTestRunner
  * repository/provider operation the mapping table names, with opaque columns
  * preserved verbatim and refusals writing nothing. Mockk verifies the
  * mapping; Robolectric supplies the android.net.Uri machinery the
- * instance-URI delete builds on.
+ * canceled-exception insert builds on.
  */
 @RunWith(RobolectricTestRunner::class)
 class RecurrenceEditorTest {
@@ -178,6 +179,74 @@ class RecurrenceEditorTest {
         assertEquals(instanceStart + 86_400_000, row.startMillis)
         assertEquals(instanceStart + 86_400_000 + 3_600_000, row.endMillis)
         assertEquals(null, row.duration)
+    }
+
+    // ---- Calendar moves through scoped writes (14.5) ----------------------
+
+    @Test
+    fun `calendar change rides UpdateParentRow onto the parent`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns loaded()
+
+        editor.apply(Resolution.UpdateParentRow(parentId, EventFieldEdits(calendarId = 9L)))
+
+        assertEquals(9L, savedDrafts.single().calendarId)
+    }
+
+    @Test
+    fun `calendar change rides exception inserts onto the exception row`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns loaded()
+
+        editor.apply(
+            Resolution.InsertExceptionRow(
+                parentEventId = parentId,
+                originalInstanceTimeMillis = instanceStart,
+                newRowEdits = EventFieldEdits(calendarId = 9L),
+            ),
+        )
+
+        assertEquals(9L, savedDrafts.single().calendarId)
+    }
+
+    @Test
+    fun `calendar change rides the continuation row but not the truncated parent`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns loaded()
+
+        editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(instanceStart - 1),
+                newRowStartMillis = instanceStart,
+                newRowEdits = EventFieldEdits(calendarId = 9L),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY),
+            ),
+        )
+
+        assertEquals("parent keeps its own calendar", 7L, savedDrafts[0].calendarId)
+        assertEquals("continuation moves to the new calendar", 9L, savedDrafts[1].calendarId)
+    }
+
+    @Test
+    fun `without a calendar edit the scoped writes keep the parent calendar`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns loaded()
+
+        editor.apply(
+            Resolution.InsertExceptionRow(
+                parentEventId = parentId,
+                originalInstanceTimeMillis = instanceStart,
+                newRowEdits = EventFieldEdits(title = "moved once"),
+            ),
+        )
+        editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(instanceStart - 1),
+                newRowStartMillis = instanceStart,
+                newRowEdits = EventFieldEdits(),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY),
+            ),
+        )
+
+        assertEquals(listOf(7L, 7L, 7L), savedDrafts.map { it.calendarId })
     }
 
     // ---- SplitParent -----------------------------------------------------
@@ -401,35 +470,18 @@ class RecurrenceEditorTest {
     }
 
     @Test
-    fun `splitParent after instance-uri deletes keeps every exclusion on its own side`() = runTest {
+    fun `splitParent keeps pre-existing EXDATE exclusions on their own side`() = runTest {
         // Weekly Mondays at 14:00 UTC: #1 Aug 17 ... #5 Sep 14. The review
-        // repro: delete #5 (this instance), then split at #3 — #5 must stay
-        // deleted instead of resurrecting in the continuation.
+        // repro's data state: #5 and #1 were deleted earlier — their
+        // exclusions ride the parent's EXDATE string, which the split must
+        // partition so #5 stays gone instead of resurrecting in the
+        // continuation. (The canceled-exception form is covered end-to-end by
+        // RecurrenceEditorInstanceDeleteTest against the fake provider.)
         val occ1 = instanceStart
         val occ3 = instanceStart + 2 * 7 * 86_400_000L
         val occ5 = instanceStart + 4 * 7 * 86_400_000L
-
-        var stored = recurringDraft
-        coEvery { repository.loadEvent(parentId) } answers { LoadedEvent(stored, opaque) }
-        coEvery {
-            repository.saveEvent(capture(savedDrafts), capture(savedOpaque))
-        } answers {
-            val saved = firstArg<EventDraft>()
-            if (saved.eventId != null) stored = saved // parent updates persist
-            1L
-        }
-
-        // Delete #5 then #1 the way ScopeResolver.resolveDelete routes them:
-        // an instance-uri DELETE. FakeCalendarProvider does not implement
-        // EXDATE-on-delete, so simulate CalendarProvider2 by appending to the
-        // parent's EXDATE string exactly what the real provider writes.
-        val deletedFive = editor.apply(Resolution.DeleteInstanceUri(parentId, occ5))
-        assertEquals(parentId, (deletedFive as RecurrenceEditor.Outcome.Written).touchedEventId)
-        stored = stored.copy(exdate = utcToken(occ5))
-        editor.apply(Resolution.DeleteInstanceUri(parentId, occ1))
-        stored = stored.copy(exdate = "${utcToken(occ5)},${utcToken(occ1)}")
-        savedDrafts.clear()
-        savedOpaque.clear()
+        coEvery { repository.loadEvent(parentId) } returns
+            LoadedEvent(recurringDraft.copy(exdate = "${utcToken(occ5)},${utcToken(occ1)}"), opaque)
 
         val outcome = editor.apply(
             Resolution.SplitParent(
@@ -588,23 +640,51 @@ class RecurrenceEditorTest {
     }
 
     @Test
-    fun `deleteInstanceUri deletes the instance-start URI`() = runTest {
-        val outcome = editor.apply(
-            Resolution.DeleteInstanceUri(parentId, instanceStart),
-        )
+    fun `cancelInstance inserts a canceled exception for the tapped occurrence`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns loaded()
+        val uris = mutableListOf<android.net.Uri>()
+        val inserted = mutableListOf<ContentValues>()
+        every {
+            resolver.insert(capture(uris), capture(inserted))
+        } returns ContentUris.appendId(
+            android.net.Uri.parse("content://com.android.calendar/events").buildUpon(), 99L,
+        ).build()
+
+        val outcome = editor.apply(Resolution.DeleteInstanceUri(parentId, instanceStart))
 
         assertEquals(RecurrenceEditor.Outcome.Written(parentId), outcome)
+        // The AOSP DeleteEventHelper shape: CONTENT_EXCEPTION_URI appended
+        // with the PARENT event id, ORIGINAL_INSTANCE_TIME = the occurrence.
+        // The old events/{millis} DELETE matched an event _id, never wrote an
+        // exclusion, and could delete a random row — none of that remains.
+        assertEquals(
+            "content://com.android.calendar/exception/$parentId",
+            uris.single().toString(),
+        )
+        assertEquals(instanceStart, inserted.single().getAsLong(Events.ORIGINAL_INSTANCE_TIME))
+        assertEquals(
+            Events.STATUS_CANCELED.toLong(),
+            inserted.single().getAsLong(Events.STATUS),
+        )
         coVerify(exactly = 0) { repository.saveEvent(any(), any()) }
         coVerify(exactly = 0) { repository.deleteEvent(any()) }
-        coVerify(exactly = 1) {
-            resolver.delete(
-                match { uri ->
-                    uri.toString() == "content://com.android.calendar/events/$instanceStart"
-                },
-                null,
-                null,
-            )
-        }
+        coVerify(exactly = 0) { resolver.delete(any(), any(), any()) }
+    }
+
+    @Test
+    fun `cancelInstance reports refusal when the provider rejects the exception insert`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns loaded()
+        // A null insert result is CalendarProvider2's "write not accepted":
+        // surfacing Written here would close the UI while the occurrence
+        // keeps expanding.
+        every { resolver.insert(any(), any()) } returns null
+
+        val outcome = editor.apply(Resolution.DeleteInstanceUri(parentId, instanceStart))
+
+        assertTrue(outcome is RecurrenceEditor.Outcome.Refused)
+        assertTrue(requireNotNull((outcome as RecurrenceEditor.Outcome.Refused).reason).isNotBlank())
+        coVerify(exactly = 0) { repository.saveEvent(any(), any()) }
+        coVerify(exactly = 0) { repository.deleteEvent(any()) }
     }
 
     // ---- Refusal / missing rows -------------------------------------------

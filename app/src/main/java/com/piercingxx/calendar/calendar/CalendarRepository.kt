@@ -232,12 +232,7 @@ private fun Cursor.toEventDraft(eventId: Long): EventDraft = EventDraft(
 private fun EventDraft.writeModeledInto(values: ContentValues) {
     values.put(Events.CALENDAR_ID, calendarId)
     values.put(Events.DTSTART, startMillis)
-    // Recurring events carry DURATION instead of DTEND per RFC 5545 / provider contract.
-    if (duration != null) {
-        values.put(Events.DURATION, duration)
-    } else if (endMillis != null) {
-        values.put(Events.DTEND, endMillis)
-    }
+    writeExtentInto(values)
     values.put(Events.ALL_DAY, if (allDay) 1 else 0)
     values.put(Events.EVENT_TIMEZONE, eventTimezone)
     values.put(Events.AVAILABILITY, availability)
@@ -255,6 +250,53 @@ private fun EventDraft.writeModeledInto(values: ContentValues) {
         values.put(Events.ORIGINAL_ALL_DAY, if (originalAllDay) 1 else 0)
     }
 }
+
+/**
+ * DTSTART's companion extent, written as exactly one of DURATION / DTEND with
+ * the other explicitly NULLed. CalendarProvider2 merges an update onto the
+ * existing row before validating it (`handleUpdateEvents`), so leaving the
+ * unused column absent keeps any stale leftover of the other kind on the row
+ * and the save dies with
+ * `IllegalArgumentException("Cannot have both DTEND and DURATION in an event")`
+ * — e.g. adding a repeat to a timed single event whose row carries DTEND, or
+ * saving a DURATION-based recurring all-day row through the editor, whose
+ * draft always arrives with an exclusive DTEND ([com.piercingxx.calendar.ui.editor.buildDraft]).
+ *
+ * Repeating all-day rows follow the provider recurrence shape: DURATION in
+ * whole days, DTEND null — not the single-event exclusive end.
+ */
+private fun EventDraft.writeExtentInto(values: ContentValues) {
+    val recurring = !rrule.isNullOrBlank() || !rdate.isNullOrBlank()
+    when {
+        duration != null -> {
+            values.put(Events.DURATION, duration)
+            values.putNull(Events.DTEND)
+        }
+
+        recurring && allDay && endMillis != null -> {
+            // Exclusive end → P<n>D. A well-formed all-day row spans whole
+            // days; anything else is malformed input and falls through to the
+            // plain DTEND shape rather than inventing a duration.
+            val days = (endMillis - startMillis) / DAY_MILLIS
+            if (days > 0 && startMillis + days * DAY_MILLIS == endMillis) {
+                values.put(Events.DURATION, "P${days}D")
+                values.putNull(Events.DTEND)
+            } else {
+                values.put(Events.DTEND, endMillis)
+                values.putNull(Events.DURATION)
+            }
+        }
+
+        endMillis != null -> {
+            values.put(Events.DTEND, endMillis)
+            values.putNull(Events.DURATION)
+        }
+        // Neither end nor duration: leave both out. The draft describes no
+        // extent at all; the provider validates that on insert/update merge.
+    }
+}
+
+private const val DAY_MILLIS = 86_400_000L
 
 /**
  * The §8.6 consumption filters applied ABOVE the query layer, so every

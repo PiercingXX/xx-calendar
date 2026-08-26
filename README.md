@@ -27,8 +27,11 @@ aapt2 dump permissions app/build/outputs/apk/debug/app-debug.apk
 
 Calendar read/write, notifications, boot-completed, exact alarms, and the
 wake-lock trio Glance pulls in transitively. `INTERNET` is not on the list, and
-a CI gate fails the build the day it is. No account, no telemetry. Any CalDAV
-server works, including one on your own hardware.
+a pre-push hook rejects any push where it appears. That hook is local-only —
+CI is dead (Actions minutes are billed and the account's billing failed), so
+the hook is the only enforcement and only in clones that activate it (see
+Build). No account, no telemetry. Any CalDAV server works, including one on
+your own hardware.
 
 ## Defaults with a spine
 
@@ -53,27 +56,39 @@ export JAVA_HOME=$HOME/tools/jdk-21.0.12.1+1
 ./gradlew testDebugUnitTest lint assembleDebug assembleDebugAndroidTest
 ```
 
+Activate the R3 no-`INTERNET` gate in your clone — it does nothing in a fresh
+clone until `core.hooksPath` points at `.githooks`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+From then on every push rebuilds the debug APK if it is stale and runs
+`aapt2 dump permissions`, failing the push if `android.permission.INTERNET`
+shows up.
+
 JDK 21 on Gradle 8.11.1, JVM target 17, AGP 8.9.1, Kotlin 2.1.20, Robolectric
 4.13 for the provider fakes. Built for GrapheneOS. No Play Services.
 
 ## Status 🧪
 
 Feature-complete against the plan and installed on a Pixel 6 under GrapheneOS.
-326 unit tests green, `lint` clean, both debug builds green, APK provably free
+409 unit tests green, `lint` clean, both debug builds green, APK provably free
 of `INTERNET`.
 
 **The provider layer is unproven against real DAVx⁵ data.** The instrumented
 suites compile but have never run against the device, which is the difference
 between "compiles" and "works". That, plus an on-phone review of the
 [sigil mock](design/mock/sigil-mock.html), is the open list —
-[review.md](review.md) and [todo.md](todo.md) have the detail.
+[todo.md](todo.md) tracks it; [review.md](review.md) is kept as the frozen
+2026-08-23 record.
 
 ## More
 
 | Doc | What it is |
 |---|---|
 | [design.md](design.md) | The spec — architecture, data model, UI, build order |
-| [todo.md](todo.md) | The build plan — workstreams and gates |
+| [todo.md](todo.md) | The open list — remaining workstreams, gates, and setup notes |
 | [design/google-calendar-teardown.md](design/google-calendar-teardown.md) | Every Google Calendar feature, and why it stayed or went |
 
 Layout and information architecture were reimplemented from published

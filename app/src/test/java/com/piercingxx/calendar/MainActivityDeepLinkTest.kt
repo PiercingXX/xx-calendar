@@ -42,10 +42,20 @@ class MainActivityDeepLinkTest {
     }
 
     @Test
-    fun `text calendar view routes to import`() {
+    fun `text calendar view carries the handed-over file uri`() {
+        val uri = Uri.parse("content://downloads/document/5")
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "text/calendar")
+        assertEquals(DeepLink.ImportIcs(uri), parseDeepLink(intent))
+    }
+
+    @Test
+    fun `file scheme ics view also carries its uri`() {
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(Uri.parse("file:///sd/plan.ics"), "text/calendar")
-        assertEquals(DeepLink.ImportIcs, parseDeepLink(intent))
+        assertEquals(
+            DeepLink.ImportIcs(Uri.parse("file:///sd/plan.ics")),
+            parseDeepLink(intent),
+        )
     }
 
     @Test

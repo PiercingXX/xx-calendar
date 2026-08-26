@@ -71,7 +71,9 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun ScheduleScreen(
-    onEventClick: (Long) -> Unit,
+    // 14.1 / handoff note a: taps carry the tapped occurrence's BEGIN, same
+    // as Month's peek and the Day/Week grids.
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
     modifier: Modifier = Modifier,
     state: ScheduleWindowState = remember { ScheduleWindowState() },
 ) {
@@ -216,7 +218,7 @@ private fun DayBlock(
     calendarsById: Map<Long, CalendarSummary>,
     nowMillis: Long,
     zone: ZoneId,
-    onEventClick: (Long) -> Unit,
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(28.dp))
@@ -252,7 +254,7 @@ private fun EventRow(
     calendarsById: Map<Long, CalendarSummary>,
     nowMillis: Long,
     zone: ZoneId,
-    onEventClick: (Long) -> Unit,
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
 ) {
     val colors = LocalCalendarColors.current
     val accountName = calendarsById[instance.calendarId]?.accountName ?: ""
@@ -264,7 +266,7 @@ private fun EventRow(
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 34.dp)
-            .clickable { onEventClick(instance.eventId) }
+            .clickable { onEventClick(instance.eventId, instance.startMillis) }
             .padding(horizontal = 16.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

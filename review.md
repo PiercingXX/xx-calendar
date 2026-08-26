@@ -1,5 +1,8 @@
 # XX-Calendar — Independent Review · 2026-08-23
 
+> Every P0 below is fixed off-device; remaining work lives in
+> [todo.md](todo.md). This file is kept as the 2026-08-23 record.
+
 Read alongside [todo.md](todo.md). Everything below was checked against the
 tree at `a7449bf`, not inferred from the plan. Where this contradicts
 todo.md's own "Post-build review", this document is the later reading — its

@@ -118,8 +118,163 @@ class CalendarRepositoryTest : FakeProviderFixture() {
         )
         val row = fake.events.getValue(id)
         assertEquals("PT45M", row[Events.DURATION])
-        assertFalse(row.containsKey(Events.DTEND))
+        // Written explicitly NULL so an update merged onto a DTEND-shaped row
+        // cannot leave both extents behind (WS13.2).
+        assertNull(row[Events.DTEND])
         assertEquals("FREQ=DAILY;INTERVAL=2", row[Events.RRULE])
+    }
+
+    // --------------------------------------- DTEND / DURATION exclusivity
+
+    @Test
+    fun `adding a repeat to a timed single event nulls the leftover dtend`() = runTest {
+        fake.seedCalendar()
+        val repo = repo()
+        val start = utc(2026, 8, 24, 9, 0)
+        // A timed SINGLE event as the provider stores it: DTEND, no DURATION.
+        val id = repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                startMillis = start,
+                endMillis = start + 1_800_000L,
+                eventTimezone = "UTC",
+                title = "lunch",
+            ),
+        )
+        assertEquals(start + 1_800_000L, fake.events.getValue(id)[Events.DTEND])
+
+        // Adding a repeat produces exactly what buildDraft emits: a duration,
+        // no absolute end. CalendarProvider2 merges this onto the row above
+        // before validating — without the explicit DTEND null the stale value
+        // survives and the provider throws
+        // "Cannot have both DTEND and DURATION in an event".
+        repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                eventId = id,
+                startMillis = start,
+                endMillis = null,
+                eventTimezone = "UTC",
+                title = "lunch",
+                duration = "PT30M",
+                rrule = "FREQ=DAILY",
+            ),
+        )
+        val row = fake.events.getValue(id)
+        assertEquals("PT30M", row[Events.DURATION])
+        assertNull(row[Events.DTEND])
+    }
+
+    @Test
+    fun `removing a repeat restores dtend and nulls duration`() = runTest {
+        fake.seedCalendar()
+        val repo = repo()
+        val start = utc(2026, 8, 24, 9, 0)
+        // Recurring row in the provider's duration shape.
+        val id = fake.seedEvent(
+            1L,
+            Events.TITLE to "lunch",
+            Events.DTSTART to start,
+            Events.DURATION to "PT30M",
+            Events.RRULE to "FREQ=DAILY",
+        )
+        fake.events.getValue(id).remove(Events.DTEND)
+
+        // Removing the repeat: absolute end again, rule and duration gone.
+        repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                eventId = id,
+                startMillis = start,
+                endMillis = start + 1_800_000L,
+                eventTimezone = "UTC",
+                title = "lunch",
+                duration = null,
+                rrule = null,
+            ),
+        )
+        val row = fake.events.getValue(id)
+        assertEquals(start + 1_800_000L, row[Events.DTEND])
+        assertNull(row[Events.DURATION])
+        assertNull(row[Events.RRULE])
+    }
+
+    @Test
+    fun `all-day recurring row keeps the duration shape when saved`() = runTest {
+        fake.seedCalendar()
+        val repo = repo()
+        val dayStart = utc(2026, 8, 24, 0, 0)
+        // All-day recurring Google/DAVx⁵ row: DURATION=P1D, DTEND absent.
+        val id = fake.seedEvent(
+            1L,
+            Events.TITLE to "retreat",
+            Events.DTSTART to dayStart,
+            Events.DURATION to "P1D",
+            Events.ALL_DAY to 1L,
+            Events.EVENT_TIMEZONE to "UTC",
+            Events.RRULE to "FREQ=WEEKLY",
+        )
+        fake.events.getValue(id).remove(Events.DTEND)
+
+        // What buildDraft emits for a saved all-day recurring event: an
+        // EXCLUSIVE DTEND and no duration. writeModeledInto must translate it
+        // back to the provider recurrence shape instead of writing DTEND onto
+        // the DURATION-shaped row.
+        repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                eventId = id,
+                startMillis = dayStart,
+                endMillis = dayStart + DAY_MILLIS,
+                eventTimezone = "UTC",
+                title = "retreat renamed",
+                allDay = true,
+                rrule = "FREQ=WEEKLY",
+            ),
+        )
+        val row = fake.events.getValue(id)
+        assertEquals("P1D", row[Events.DURATION])
+        assertNull(row[Events.DTEND])
+        assertEquals("FREQ=WEEKLY", row[Events.RRULE])
+
+        // Multi-day span travels as whole days too.
+        repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                eventId = id,
+                startMillis = dayStart,
+                endMillis = dayStart + 3 * DAY_MILLIS,
+                eventTimezone = "UTC",
+                title = "retreat extended",
+                allDay = true,
+                rrule = "FREQ=WEEKLY",
+            ),
+        )
+        assertEquals("P3D", fake.events.getValue(id)[Events.DURATION])
+        assertNull(fake.events.getValue(id)[Events.DTEND])
+    }
+
+    @Test
+    fun `single all-day event keeps exclusive dtend and nulls duration`() = runTest {
+        fake.seedCalendar()
+        val repo = repo()
+        val dayStart = utc(2026, 8, 24, 0, 0)
+
+        val id = repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                startMillis = dayStart,
+                endMillis = dayStart + DAY_MILLIS,
+                eventTimezone = "UTC",
+                title = "one-off holiday",
+                allDay = true,
+            ),
+        )
+
+        val row = fake.events.getValue(id)
+        assertEquals(dayStart + DAY_MILLIS, row[Events.DTEND])
+        assertNull(row[Events.DURATION])
+        assertNull(row[Events.RRULE])
     }
 
     // ---------------------------------------------------------- calendars
@@ -226,10 +381,14 @@ class CalendarRepositoryTest : FakeProviderFixture() {
         )
         assertNotEquals(sourceId, duplicateId)
 
+        // App-writable opaque columns clone onto the copy; sync-adapter-owned
+        // ones must not — the fake would reject the insert otherwise (WS13.1).
         val row = fake.events.getValue(duplicateId)
         assertEquals("Flight UA234 (copy)", row[Events.TITLE])
         assertEquals(3L, row[Events.ACCESS_LEVEL])
         assertEquals("airline@example.com", row[Events.ORGANIZER])
-        assertEquals("server-token-99", row["sync_data1"])
+        assertFalse(row.containsKey("sync_data1"))
     }
 }
+
+private const val DAY_MILLIS = 86_400_000L

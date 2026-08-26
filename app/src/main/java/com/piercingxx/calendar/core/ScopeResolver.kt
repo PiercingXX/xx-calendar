@@ -35,6 +35,14 @@ data class EventFieldEdits(
     val eventTimezone: String? = null,
     val eventEndTimezone: String? = null,
     val availability: Int? = null,
+
+    /**
+     * A calendar move on a repeating event. Without it the scoped writes
+     * (exception insert / split continuation) could only ever clone the
+     * parent's calendar and a calendar change would be silently dropped.
+     * Null = leave as loaded, like every other payload here.
+     */
+    val calendarId: Long? = null,
     val clearTitle: Boolean = false,
     val clearLocation: Boolean = false,
     val clearDescription: Boolean = false,
@@ -61,6 +69,13 @@ sealed interface Resolution {
 
     data class DeleteParentRow(val parentEventId: Long) : Resolution
     data class SetUntil(val parentEventId: Long, val until: EndCondition.Until) : Resolution
+
+    /**
+     * Delete: this instance. The executor realizes it as a canceled exception
+     * row (CONTENT_EXCEPTION_URI + ORIGINAL_INSTANCE_TIME + STATUS_CANCELED —
+     * the AOSP DeleteEventHelper path); appending to EXDATE by hand or
+     * deleting an events/{millis} URI are the paths that do not work.
+     */
     data class DeleteInstanceUri(val parentEventId: Long, val instanceStartMillis: Long) : Resolution
     data class Refusal(val reason: String) : Resolution
 }
@@ -113,7 +128,11 @@ object ScopeResolver {
                     ),
                     newRowStartMillis = instance.instanceStartMillis,
                     newRowEdits = edits,
-                    remainingRule = rule.copy(end = EndCondition.Never),
+                    // The continuation carries "the remaining rule" (§6.3): an
+                    // UNTIL the parent already had stays its end, so a bounded
+                    // series never becomes an infinite one. COUNT cannot reach
+                    // here — it is refused above.
+                    remainingRule = rule,
                 )
             }
 
@@ -123,8 +142,9 @@ object ScopeResolver {
 
     /**
      * Deleting a single instance resolves to [Resolution.DeleteInstanceUri]:
-     * we let the provider write EXDATE rather than inserting a canceled
-     * exception row. §6.3 offers either; we pick one and never mix them.
+     * the executor inserts a canceled exception row (§6.3's first option) and
+     * the provider suppresses that occurrence. One mechanism, never mixed
+     * with hand-edited EXDATE.
      */
     fun resolveDelete(
         context: RecurringEventContext,

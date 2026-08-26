@@ -48,10 +48,20 @@ object OpaqueColumns {
      * - `DIRTY`, `DELETED`, `LAST_SYNCED`, `MUTATORS`: the dirty-marking that
      *   tells DAVx⁵ to push our write; overwriting them breaks sync (§4.1).
      * - `ORIGINAL_SYNC_ID`, `UID_2445`: sync-adapter-owned identity.
+     * - `SYNC_DATA1`..`SYNC_DATA10`: sync-adapter-owned blobs — DAVx⁵ stores
+     *   href/etag there. A normal client writing any of them makes
+     *   CalendarProvider2 throw `IllegalArgumentException("Only sync adapters
+     *   may write to …")`, so a title-only edit of a synced row would reject
+     *   the whole save; cloning them onto an inserted exception or continuation
+     *   row would do the same. Absence preserves them on update, and inserts
+     *   simply start without them.
      * - `IS_ORGANIZER`, `EVENT_COLOR`, `HAS_ALARM`,
      *   `HAS_EXTENDED_PROPERTIES`, `LAST_DATE`: derived by the provider.
      * - `SELF_ATTENDEE_STATUS`: attendee-domain state this app never edits
      *   (teardown §3.4 — attendee rows are untouched).
+     *
+     * `CUSTOM_APP_PACKAGE`/`CUSTOM_APP_URI` stay preservable — those are
+     * app-writable and carry conferencing URIs (design §6.2).
      */
     val NON_PRESERVED_COLUMNS: Set<String> = setOf(
         Events._ID,
@@ -64,6 +74,16 @@ object OpaqueColumns {
         Events._SYNC_ID,
         Events.ORIGINAL_SYNC_ID,
         Events.UID_2445,
+        Events.SYNC_DATA1,
+        Events.SYNC_DATA2,
+        Events.SYNC_DATA3,
+        Events.SYNC_DATA4,
+        Events.SYNC_DATA5,
+        Events.SYNC_DATA6,
+        Events.SYNC_DATA7,
+        Events.SYNC_DATA8,
+        Events.SYNC_DATA9,
+        Events.SYNC_DATA10,
         Events.IS_ORGANIZER,
         Events.EVENT_COLOR,
         Events.HAS_ALARM,

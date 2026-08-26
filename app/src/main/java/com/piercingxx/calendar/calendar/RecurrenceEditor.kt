@@ -32,8 +32,9 @@ import kotlinx.coroutines.CancellationException
  * |                    | then tail exception rows are re-pointed onto the new row           |
  * | DeleteParentRow    | deleteEvent(parent)                                                |
  * | SetUntil           | parent RRULE rewritten with UNTIL; nothing else                    |
- * | DeleteInstanceUri  | delete the instance URI (id portion = instance start); the         |
- * |                    | provider writes EXDATE — never hand-edited here (§6.3)             |
+ * | DeleteInstanceUri  | insert a canceled exception via CONTENT_EXCEPTION_URI              |
+ * |                    | (ORIGINAL_INSTANCE_TIME + STATUS_CANCELED, the AOSP                |
+ * |                    | DeleteEventHelper path); the provider suppresses that occurrence   |
  * | Refusal            | nothing is written; the reason surfaces to the UI                  |
  *
  * [apply]'s `replacementRule` carries the one thing [EventFieldEdits] cannot
@@ -71,10 +72,11 @@ private data class RecurrenceDates(val rdate: String?, val exdate: String?)
 class RecurrenceEditor(
     private val repository: CalendarRepository,
     private val resolver: ContentResolver,
-    private val instanceEventUri: (Long) -> Uri = { instanceStartMillis ->
-        // Events contract: for an occurrence-scoped delete the URI's id portion
-        // is the instance start, and the provider converts it to EXDATE.
-        ContentUris.withAppendedId(Events.CONTENT_URI, instanceStartMillis)
+    private val instanceExceptionUri: (Long) -> Uri = { parentEventId ->
+        // CalendarContract: appending the ORIGINAL event id to the exception
+        // base URI and inserting ORIGINAL_INSTANCE_TIME + STATUS realizes a
+        // single-occurrence write (canceled = deleted) on that series.
+        ContentUris.withAppendedId(Events.CONTENT_EXCEPTION_URI, parentEventId)
     },
 ) {
 
@@ -100,7 +102,7 @@ class RecurrenceEditor(
             is Resolution.SplitParent -> splitParent(resolution, replacementRule)
             is Resolution.DeleteParentRow -> deleteParentRow(resolution)
             is Resolution.SetUntil -> setUntil(resolution)
-            is Resolution.DeleteInstanceUri -> deleteInstanceUri(resolution)
+            is Resolution.DeleteInstanceUri -> cancelInstance(resolution)
             is Resolution.Refusal -> Outcome.Refused(resolution.reason)
         }
 
@@ -133,7 +135,7 @@ class RecurrenceEditor(
                 base.endMillis?.let { parentEnd -> newStart + (parentEnd - base.startMillis) }
             }
         val exception = EventDraft(
-            calendarId = base.calendarId,
+            calendarId = edits.calendarId ?: base.calendarId,
             startMillis = newStart,
             endMillis = newEnd,
             eventTimezone = edits.eventTimezone ?: base.eventTimezone,
@@ -218,7 +220,7 @@ class RecurrenceEditor(
             }
         val rule = replacementRule ?: resolution.remainingRule
         val newRow = EventDraft(
-            calendarId = base.calendarId,
+            calendarId = edits.calendarId ?: base.calendarId,
             startMillis = newStart,
             endMillis = newEnd,
             eventTimezone = edits.eventTimezone ?: base.eventTimezone,
@@ -317,8 +319,33 @@ class RecurrenceEditor(
         return Outcome.Written(resolution.parentEventId)
     }
 
-    private suspend fun deleteInstanceUri(resolution: Resolution.DeleteInstanceUri): Outcome {
-        resolver.delete(instanceEventUri(resolution.instanceStartMillis), null, null)
+    /**
+     * Delete: this instance (§6.3). Inserts a canceled exception through
+     * [Events.CONTENT_EXCEPTION_URI] — the AOSP `DeleteEventHelper` path:
+     * ORIGINAL_INSTANCE_TIME names the tapped occurrence and STATUS_CANCELED
+     * makes the provider suppress it. The old events/{millis} DELETE was a
+     * lie: CalendarProvider2 matches that id as an event `_ID`, so the call
+     * was a no-op at best and never wrote any exclusion.
+     *
+     * A null return from [ContentResolver.insert] means the provider refused
+     * the exception row; reporting Written here would close the sheet as if
+     * the occurrence was suppressed while it would keep expanding.
+     */
+    private suspend fun cancelInstance(resolution: Resolution.DeleteInstanceUri): Outcome {
+        val parent = repository.loadEvent(resolution.parentEventId)
+            ?: return Outcome.Missing(resolution.parentEventId)
+        val values = ContentValues().apply {
+            put(Events.ORIGINAL_INSTANCE_TIME, resolution.instanceStartMillis)
+            put(Events.STATUS, Events.STATUS_CANCELED)
+            // AOSP DeleteEventHelper writes this; without it an all-day
+            // occurrence's ORIGINAL_INSTANCE_TIME (UTC midnight) can fail
+            // to match the expanded instance.
+            put(Events.ORIGINAL_ALL_DAY, if (parent.draft.allDay) 1 else 0)
+        }
+        resolver.insert(instanceExceptionUri(resolution.parentEventId), values)
+            ?: return Outcome.Refused(
+                "the calendar provider refused this deletion; the occurrence remains",
+            )
         return Outcome.Written(touchedEventId = resolution.parentEventId)
     }
 
@@ -338,15 +365,12 @@ class RecurrenceEditor(
     }
 
     /**
-     * RDATE/EXDATE partition for a split. Deleted-instance exclusions live in
-     * the parent's EXDATE string (§6.3: the provider writes it on an
-     * instance-uri delete) and RDATE additions ride beside them — neither is
-     * an exception ROW, so [migrateTailExceptions] cannot carry them over.
-     * Returns the parent-kept entries (strictly before [splitMillis], the same
-     * boundary its new UNTIL enforces) first and the continuation's entries
-     * (at or after the split, matching migrateTailExceptions' `>=`) second;
-     * skipping the second half would resurrect previously deleted tail
-     * occurrences inside the new series.
+     * RDATE/EXDATE partition for a split. This-instance deletes are canceled
+     * exception rows, migrated by [migrateTailExceptions]; these strings are
+     * only the exclusions/additions already stored on the parent (foreign
+     * EXDATE, or an older client). Returns parent-kept entries (strictly
+     * before [splitMillis], the same boundary its new UNTIL enforces) first
+     * and the continuation's entries (at or after the split) second.
      */
     private fun splitRecurrenceDates(
         draft: EventDraft,
@@ -430,5 +454,6 @@ class RecurrenceEditor(
         eventTimezone = eventTimezone ?: draft.eventTimezone,
         eventEndTimezone = if (clearEventEndTimezone) null else eventEndTimezone ?: draft.eventEndTimezone,
         availability = availability ?: draft.availability,
+        calendarId = calendarId ?: draft.calendarId,
     )
 }

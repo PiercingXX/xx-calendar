@@ -8,6 +8,7 @@ import android.provider.CalendarContract
 import android.util.Log
 import com.piercingxx.calendar.calendar.CalendarInstance
 import com.piercingxx.calendar.calendar.CalendarRepository
+import com.piercingxx.calendar.calendar.InstanceFilters
 import com.piercingxx.calendar.settings.SettingsStore
 import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
@@ -118,13 +119,36 @@ object ReminderReconciler {
         // having run in this process. MainActivity's mirror stays as the
         // change-trigger that re-reconciles on edits; on a read failure the
         // last-known mirror is kept rather than reset.
-        runCatching { SettingsStore(app).current().allDayNotification }
-            .onSuccess { ReminderPlanner.allDayPolicy = it }
+        val settings = runCatching { SettingsStore(app).current() }.getOrNull()
+        settings?.allDayNotification?.let { ReminderPlanner.allDayPolicy = it }
 
         // Instances over [now, now+48h). A trigger can never precede its
         // instance start minus lead, and past triggers are dropped by the
         // planner, so no earlier window is needed.
-        val instances = repository.instances(now, now + HORIZON_MILLIS)
+        val raw = repository.instances(now, now + HORIZON_MILLIS)
+
+        // WS16: alarms match the VISIBLE calendar. Views and widgets run
+        // InstanceFilters (declined + auto-added) over every instance they
+        // consume; a Gmail-booking row hidden by hideAutoAdded must not keep
+        // firing an alarm from behind the filter. Same arguments, same
+        // predicate as Schedule/Month/Week. On a settings read failure the
+        // pass keeps the pre-WS16 behavior (raw window) rather than inventing
+        // hides from defaults; a calendars read failure degrades to an empty
+        // map, where stage-1 calendar evidence simply cannot fire.
+        val instances = if (settings != null) {
+            val calendarsById = runCatching { repository.calendars() }
+                .getOrDefault(emptyList())
+                .associateBy { it.id }
+            InstanceFilters.apply(
+                raw,
+                showDeclined = settings.showDeclined,
+                hideAutoAdded = settings.hideAutoAdded,
+                autoAddedFilterMode = settings.autoAddedFilterMode,
+                calendarsById = calendarsById,
+            )
+        } else {
+            raw
+        }
         val minutesByEvent =
             reminderMinutesByEvent(app, instances.map { it.eventId }.distinct())
 

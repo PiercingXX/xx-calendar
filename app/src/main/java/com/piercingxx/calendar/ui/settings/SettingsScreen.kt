@@ -1,13 +1,16 @@
 package com.piercingxx.calendar.ui.settings
 
+import android.Manifest
 import android.content.ContentResolver
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings as SystemSettings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -101,6 +104,9 @@ fun SettingsScreen() {
     var calendars by remember { mutableStateOf<List<CalendarSummary>>(emptyList()) }
     var sigils by remember { mutableStateOf<Map<CalendarKey, SigilTier>>(emptyMap()) }
     var exactAlarmsDenied by remember { mutableStateOf(!alarmScheduler.canScheduleExactAlarms()) }
+    // 15.3: ReminderReceiver silently drops reminders without the runtime
+    // grant on API 33+, so denial surfaces here exactly like exact alarms.
+    var notificationsDenied by remember { mutableStateOf(!notificationsGranted(appContext)) }
     var lastChange by remember { mutableStateOf<Long?>(null) }
     var pickingSigilFor by remember { mutableStateOf<CalendarKey?>(null) }
     // DATA (WS10) state: SAF work in flight, a parsed import awaiting its
@@ -254,6 +260,12 @@ fun SettingsScreen() {
         }
     }
 
+    // 15.3 [fix] path for the notifications warn row; the result is re-read
+    // by the ON_RESUME observer, so this callback deliberately ignores it.
+    val postNotificationsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+
     // DAVx⁵ launcher intent; null when not installed → row hidden entirely.
     val davdroidIntent = remember {
         runCatching { appContext.packageManager.getLaunchIntentForPackage(DAVDROID_PACKAGE) }
@@ -268,13 +280,15 @@ fun SettingsScreen() {
 
     LaunchedEffect(Unit) { reloadCalendars() }
 
-    // The exact-alarm grant lives in system settings: re-check on every resume
-    // so [fix] round-trips actually update this row.
+    // The exact-alarm grant lives in system settings and the notification
+    // grant can be flipped in system settings too: re-check both on every
+    // resume so [fix] round-trips actually update these rows.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 exactAlarmsDenied = !alarmScheduler.canScheduleExactAlarms()
+                notificationsDenied = !notificationsGranted(appContext)
                 scope.launch { reloadCalendars() }
             }
         }
@@ -406,6 +420,15 @@ fun SettingsScreen() {
                         } catch (_: Exception) {
                             // No resolver for the system screen; stay quiet (§10: never nagged).
                         }
+                    }
+                },
+            )
+        }
+        if (notificationsDenied) {
+            NotificationsWarnRow(
+                onFix = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        postNotificationsLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 },
             )
@@ -702,6 +725,32 @@ private fun ExactAlarmsWarnRow(onFix: () -> Unit) {
     }
 }
 
+/**
+ * 15.3: same warn language as [ExactAlarmsWarnRow] — without POST_NOTIFICATIONS
+ * on API 33+ ReminderReceiver drops every reminder silently, which is worse
+ * than late.
+ */
+@Composable
+private fun NotificationsWarnRow(onFix: () -> Unit) {
+    val colors = LocalCalendarColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "⚠ notifications are denied — reminders cannot be shown",
+            style = Body,
+            color = colors.warn,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onFix) {
+            Text("[fix]", style = Body, color = colors.warn)
+        }
+    }
+}
+
 @Composable
 private fun CalendarSettingRow(
     calendar: CalendarSummary,
@@ -815,8 +864,21 @@ private val ALL_DAY_PRESETS = listOf(
 /** Text-size steps as multiples of the system font scale. */
 private val TEXT_SIZE_STEPS = listOf(0.85f, 1.0f, 1.15f, 1.3f)
 
-private fun allDayLabel(n: AllDayNotification): String =
-    "%02d:00, %s".format(Locale.ROOT, n.hourOfDay, if (n.daysBefore <= 1) "day before" else "${n.daysBefore} days before")
+/**
+ * Label for the §8.6 all-day anchor (15.5): `daysBefore == 0` fires on the
+ * event's own date, so it must say so instead of claiming "day before".
+ * Internal so the label contract is directly unit-testable.
+ */
+internal fun allDayLabel(n: AllDayNotification): String =
+    "%02d:00, %s".format(
+        Locale.ROOT,
+        n.hourOfDay,
+        when (n.daysBefore) {
+            0 -> "same day"
+            1 -> "day before"
+            else -> "${n.daysBefore} days before"
+        },
+    )
 
 /**
  * §4.1 honesty: the provider exposes no client-visible last-modified column,
@@ -833,26 +895,34 @@ private fun relativeAge(millis: Long?, now: Long = System.currentTimeMillis()): 
         else -> "${seconds / 86_400} d ago"
     }
 }
+/** 15.3: POST_NOTIFICATIONS is only a runtime permission from API 33 on. */
+internal fun notificationsGranted(context: android.content.Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
+
 // ------------------------------------------------------------- DATA (WS10)
 
 /**
  * CalendarContract.STATUS_CANCELED as a plain int — [IcsCodec.IcsEventDraft]
- * speaks provider ints so the codec stays pure JVM.
+ * speaks provider ints so the codec stays pure JVM. Internal so MainActivity's
+ * 15.7 .ics VIEW import filters with the exact same rule.
  */
-private const val STATUS_CANCELED_INT = 2
+internal const val STATUS_CANCELED_INT = 2
 
 /**
  * Read cap for every picked SAF file (§9 imports): a stream larger than this
  * aborts with a ✗ toast instead of letting `readBytes()` size an allocation
- * to the file and OOM the process.
+ * to the file and OOM the process. Internal for MainActivity's 15.7 import.
  */
-private const val MAX_IMPORT_BYTES = 10L * 1024 * 1024
+internal const val MAX_IMPORT_BYTES = 10L * 1024 * 1024
 
 /**
  * Reads [uri] in fixed chunks so allocation never tracks the file's declared
- * length, aborting the moment [maxBytes] is exceeded.
+ * length, aborting the moment [maxBytes] is exceeded. Internal for
+ * MainActivity's 15.7 import, which must bound OS-handed URIs identically.
  */
-private fun ContentResolver.readBounded(uri: Uri, maxBytes: Long): ByteArray {
+internal fun ContentResolver.readBounded(uri: Uri, maxBytes: Long): ByteArray {
     val input = openInputStream(uri) ?: error("could not read the chosen file")
     input.use {
         val out = ByteArrayOutputStream()
@@ -903,10 +973,14 @@ private suspend fun applyRestoredSettings(store: SettingsStore, s: AppSettings) 
     store.setAutoAddedFilterMode(s.autoAddedFilterMode)
 }
 
-/** Import target chooser — writable calendars only, sigil-sheet styling. */
+/**
+ * Import target chooser — writable calendars only, sigil-sheet styling.
+ * Internal so MainActivity's 15.7 .ics VIEW import reuses the exact same
+ * target-calendar choice instead of growing a second, drifting picker.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun WritableCalendarPickerSheet(
+internal fun WritableCalendarPickerSheet(
     calendars: List<CalendarSummary>,
     onPick: (Long) -> Unit,
     onDismiss: () -> Unit,

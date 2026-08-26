@@ -60,12 +60,9 @@ import com.piercingxx.calendar.calendar.LoadedEvent
 import com.piercingxx.calendar.calendar.OpaqueColumns
 import com.piercingxx.calendar.calendar.RecurrenceEditor
 import com.piercingxx.calendar.core.CalendarKey
-import com.piercingxx.calendar.core.InstanceRef
-import com.piercingxx.calendar.core.RecurringEventContext
 import com.piercingxx.calendar.core.RecurrenceScope
 import com.piercingxx.calendar.core.RRuleModel
 import com.piercingxx.calendar.core.RuleParse
-import com.piercingxx.calendar.core.ScopeResolver
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
@@ -92,6 +89,15 @@ import kotlinx.coroutines.launch
  * [eventId] null means a new event; [initialStartMillis]/[initialEndMillis]
  * pin the initial times to a grid create gesture. [duplicate] loads [eventId]'s
  * fields but strips every exception linkage so the save inserts fresh.
+ *
+ * [instanceStartMillis] is the BEGIN of the tapped occurrence (14.1): it
+ * prefills the form from that occurrence rather than the series anchor and
+ * becomes `InstanceRef.instanceStartMillis`, so This-instance / This-and-
+ * following writes stamp the occurrence actually tapped. Missing/null falls
+ * back to the parent DTSTART — the pre-14.1 behavior.
+ *
+ * [allDay] shapes a pinned-time blank form as an all-day event — the
+ * external INSERT path (EditorActivity, 15.4) passes EXTRA_EVENT_ALL_DAY.
  */
 @Composable
 fun EditorScreen(
@@ -99,6 +105,10 @@ fun EditorScreen(
     initialStartMillis: Long? = null,
     initialEndMillis: Long? = null,
     duplicate: Boolean = false,
+    instanceStartMillis: Long? = null,
+    dropStartMillis: Long? = null,
+    dropEndMillis: Long? = null,
+    allDay: Boolean = false,
     onClose: (() -> Unit)? = null,
 ) {
     val colors = LocalCalendarColors.current
@@ -138,7 +148,16 @@ fun EditorScreen(
     }
 
     // Load: existing row (edit or duplicate), or blank with pinned times.
-    LaunchedEffect(eventId) {
+    LaunchedEffect(
+        eventId,
+        instanceStartMillis,
+        dropStartMillis,
+        dropEndMillis,
+        initialStartMillis,
+        initialEndMillis,
+        allDay,
+        duplicate,
+    ) {
         if (eventId == null) {
             // §8.6 editor defaults; a broken read degrades to the quiet defaults.
             val defaults = runCatching { settingsStore.current() }.getOrDefault(AppSettings())
@@ -148,7 +167,7 @@ fun EditorScreen(
                 initialEndMillis,
                 durationMinutes = defaults.defaultDurationMin.toLong(),
                 reminderMinutes = defaults.defaultNotificationMin,
-            )
+            ).let { if (allDay) it.asAllDayPrefill(initialStartMillis, initialEndMillis) else it }
         } else {
             val l = repository.loadEvent(eventId)
             if (l == null) {
@@ -156,11 +175,21 @@ fun EditorScreen(
                 finish()
             } else {
                 if (!duplicate) loaded = l
-                form = EditorForm.fromLoaded(l, zone).copy(
+                // Prefill from the tapped occurrence, not the series anchor;
+                // [loaded] keeps the true parent row for linkage and rules.
+                val dropStart = dropStartMillis
+                val dropEnd = dropEndMillis
+                form = EditorForm.fromLoaded(l.atOccurrence(instanceStartMillis), zone).copy(
                     reminders = repository.remindersFor(l.eventId)
                         .filter { it.method == Reminders.METHOD_ALERT }
                         .map { it.minutes },
-                )
+                ).let { loadedForm ->
+                    if (dropStart != null && dropEnd != null) {
+                        loadedForm.withDroppedTimes(dropStart, dropEnd, zone)
+                    } else {
+                        loadedForm
+                    }
+                }
             }
         }
     }
@@ -222,16 +251,16 @@ fun EditorScreen(
                         "refusing to save: the recurrence rule is not recognised",
                     )
                 val updated = buildDraft(f, original, duplicate = false, zone)
-                val resolution = ScopeResolver.resolveEdit(
-                    context = RecurringEventContext(
-                        parentEventId = original.eventId,
-                        rule = rule,
-                        startMillis = original.draft.startMillis,
-                        allDay = original.draft.allDay,
-                    ),
+                // Diff against the occurrence-anchored baseline (untouched
+                // times must produce no diff), with all-events time edits
+                // converted to anchor deltas so the series shifts instead of
+                // moving its DTSTART to the tapped slot.
+                val resolution = resolveScopedEdit(
+                    original = original,
+                    rule = rule,
+                    instanceStartMillis = instanceStartMillis,
                     scope = chosen,
-                    instance = InstanceRef(original.eventId, original.draft.startMillis),
-                    edits = diffEdits(original.draft, updated),
+                    updated = updated,
                 )
                 // A replaced rule rides beside EventFieldEdits - it cannot fit
                 // inside them - and lands on the parent (all events) or the new
@@ -810,4 +839,68 @@ private fun NotificationPickerDialog(
             TextButton(onClick = onDismiss) { Text("cancel", style = Body, color = colors.muted) }
         },
     )
+}
+
+// --------------------------------------------------- external INSERT (15.4)
+
+/**
+ * Shapes a pinned-time blank form into an all-day one: the begin extra owns
+ * the date(s); clock times are dropped, matching [EditorForm.fromLoaded]'s
+ * all-day representation. Internal so the prefill contract is directly
+ * unit-testable.
+ */
+internal fun EditorForm.asAllDayPrefill(
+    startMillis: Long? = null,
+    endMillis: Long? = null,
+): EditorForm {
+    // CalendarContract all-day instants are UTC midnight. Decoding them in
+    // the device zone (EditorForm.new) turns June 10 00:00Z into June 9 west
+    // of UTC. When the extras are present, read them the same way fromLoaded
+    // reads DTSTART/DTEND.
+    val start = startMillis?.let { TimeMath.storageToAllDayDate(it) } ?: startDate
+    val end = when {
+        endMillis == null -> allDayEndDate(start, endDate, endTime)
+        else -> {
+            val exclusive = TimeMath.storageToAllDayDate(endMillis)
+            if (exclusive.isAfter(start)) exclusive.minusDays(1) else start
+        }
+    }
+    return copy(
+        allDay = true,
+        timezone = "UTC",
+        startTime = null,
+        endTime = null,
+        startDate = start,
+        endDate = if (end.isBefore(start)) start else end,
+    )
+}
+
+/** Overlay a grid drop onto the occurrence-anchored form so the drag is kept. */
+internal fun EditorForm.withDroppedTimes(
+    startMillis: Long,
+    endMillis: Long,
+    zone: ZoneId,
+): EditorForm {
+    val start = Instant.ofEpochMilli(startMillis).atZone(zone)
+    val end = Instant.ofEpochMilli(endMillis).atZone(zone)
+    return copy(
+        allDay = false,
+        startDate = start.toLocalDate(),
+        startTime = start.toLocalTime().withSecond(0).withNano(0),
+        endDate = end.toLocalDate(),
+        endTime = end.toLocalTime().withSecond(0).withNano(0),
+    )
+}
+
+/**
+ * The end extra for an all-day INSERT follows the provider's exclusive-stop
+ * convention when well-formed: a midnight end trims back one day, so
+ * Jun 10 → Jun 11T00:00 is the single day Jun 10. Any other end time is
+ * taken at its own date; a result that would precede the start clamps to a
+ * one-day event rather than an unsavable form.
+ */
+internal fun allDayEndDate(startDate: LocalDate, endDate: LocalDate, endTime: LocalTime?): LocalDate {
+    val candidate =
+        if (endTime == LocalTime.MIDNIGHT && endDate > startDate) endDate.minusDays(1) else endDate
+    return if (candidate.isBefore(startDate)) startDate else candidate
 }

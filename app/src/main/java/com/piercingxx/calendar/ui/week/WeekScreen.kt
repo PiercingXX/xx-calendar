@@ -28,6 +28,8 @@ import com.piercingxx.calendar.core.CalendarKey
 import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
+import com.piercingxx.calendar.detailRoute
+import com.piercingxx.calendar.editorRoute
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
@@ -43,6 +45,7 @@ import com.piercingxx.calendar.ui.day.moveTimedEvent
 import com.piercingxx.calendar.ui.day.resizeTimedEvent
 import com.piercingxx.calendar.ui.day.shortMonth
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.delay
@@ -53,12 +56,16 @@ import kotlinx.coroutines.launch
  * Column width compresses instead of scrolling horizontally; today's numeral
  * in the header is the inverted block. The screen owns its visible week and
  * its write path; [onNavigate] receives the app's routes.
+ *
+ * [firstDayOfWeek] carries §8.6's start day of week (15.6), exactly like
+ * MonthScreen's parameter; callers that do not pass it yet get Monday.
  */
 @Composable
 fun WeekScreen(
     modifier: Modifier = Modifier,
-    state: WeekWindowState = remember { WeekWindowState() },
+    firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY,
     onNavigate: (String) -> Unit = {},
+    state: WeekWindowState = remember(firstDayOfWeek) { WeekWindowState(firstDayOfWeek) },
 ) {
     val colors = LocalCalendarColors.current
     val context = LocalContext.current
@@ -109,9 +116,7 @@ fun WeekScreen(
         appSettings.autoAddedFilterMode,
         calendarsById,
     ) {
-        val dates = WeekWindowState.mondayOf(LocalDate.ofEpochDay(state.weekStartDay)).let {
-            (0..6).map { offset -> it.plusDays(offset.toLong()) }
-        }
+        val dates = state.dates
         val instances = InstanceFilters.apply(
             repository.instances(
                 TimeMath.localDayStart(dates.first(), zone),
@@ -146,7 +151,9 @@ fun WeekScreen(
         DaysHeaderRow(columns, today = TimeMath.localDateOf(nowMillis, zone))
         Box(Modifier.fillMaxWidth().height(1.dp).background(colors.line))
         if (columns.any { it.allDay.isNotEmpty() }) {
-            AllDayRow(columns, sigils, calendarsById, onEventClick = { id -> onNavigate("detail/$id") })
+            AllDayRow(columns, sigils, calendarsById, onEventClick = { id, start ->
+                onNavigate(detailRoute(id, start))
+            })
         }
         TimeGrid(
             columns = columns,
@@ -157,10 +164,27 @@ fun WeekScreen(
             onCreateSlot = { _, startMillis, endMillis ->
                 onNavigate("editor/new?start=$startMillis&end=$endMillis")
             },
-            onEventMoved = { eventId, startMillis, endMillis ->
+            onEventMoved = { eventId, draggedInstanceStart, startMillis, endMillis ->
                 scope.launch {
-                    runCatching { repository.moveTimedEvent(eventId, startMillis, endMillis) }
-                    state.forceRefresh()
+                    // Recurring rows are refused (a drag must not rewrite the
+                    // series); the editor is where the §6.3 scope prompt lives,
+                    // opened at the DRAGGED occurrence so it stamps that
+                    // instance's begin, not the series anchor (F3).
+                    val moved = runCatching {
+                        repository.moveTimedEvent(eventId, startMillis, endMillis)
+                    }.getOrDefault(false)
+                    if (moved) {
+                        state.forceRefresh()
+                    } else {
+                        onNavigate(
+                            editorRoute(
+                                eventId,
+                                draggedInstanceStart,
+                                dropStartMillis = startMillis,
+                                dropEndMillis = endMillis,
+                            ),
+                        )
+                    }
                 }
             },
             onEventResized = { eventId, startMillis, endMillis ->
@@ -169,7 +193,7 @@ fun WeekScreen(
                     state.forceRefresh()
                 }
             },
-            onEventClick = { id -> onNavigate("detail/$id") },
+            onEventClick = { id, start -> onNavigate(detailRoute(id, start)) },
             modifier = Modifier.weight(1f),
             scrollState = scrollState,
         )

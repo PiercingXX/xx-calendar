@@ -16,13 +16,10 @@ import com.piercingxx.calendar.core.RRuleModel
 import com.piercingxx.calendar.core.RuleParse
 import com.piercingxx.calendar.core.ScopeResolver
 import java.time.LocalDate
-import java.time.LocalDateTime
 import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -41,7 +38,9 @@ import org.junit.runner.RunWith
  * |                    | provider suppresses the generated occurrence                  |
  * | Edit +following    | parent UNTIL set; new series row present; both expand         |
  * | Edit all           | parent row updated in place, rule untouched                   |
- * | Delete this inst.  | EXDATE written BY THE PROVIDER after instance-uri delete      |
+ * | Delete this inst.  | canceled exception row via CONTENT_EXCEPTION_URI              |
+ * |                    | (ORIGINAL_INSTANCE_TIME + STATUS_CANCELED); the tapped        |
+ * |                    | occurrence vanishes from Instances, siblings remain           |
  * | Delete +following  | parent UNTIL set, no EXDATE introduced                        |
  * | Delete all         | parent gone                                                   |
  *
@@ -220,7 +219,7 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
     // ------------------------------------------------ delete: this instance
 
     @Test
-    fun delete_thisInstance_lets_the_provider_write_exdate() = runBlocking {
+    fun delete_thisInstance_suppresses_the_occurrence_via_canceled_exception() = runBlocking {
         val parent = dailySeries("FREQ=DAILY;COUNT=5")
         val second = seriesStart + dayMillis
         val third = seriesStart + 2 * dayMillis
@@ -235,16 +234,24 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
         val outcome = editor().apply(resolution)
         assertEquals(parent, (outcome as RecurrenceEditor.Outcome.Written).touchedEventId)
 
-        // Provider wrote EXDATE; we never hand-edited it (§6.3).
+        // NEW contract (14.2): the exclusion is a canceled exception row
+        // inserted through CONTENT_EXCEPTION_URI — not an EXDATE edit we
+        // hand-wrote, and not an events/{millis} DELETE the provider cannot
+        // honor. The parent's rule and its EXDATE column stay untouched.
+        val canceled = canceledExceptionsFor(second)
+        assertEquals(
+            "expected exactly one canceled exception for the tapped slot",
+            1,
+            canceled.size,
+        )
+        assertEquals(parent, canceled.single().originalId)
+        assertEquals(second, canceled.single().originalInstanceTime)
+
         val row = eventSnapshot(parent)!!
         assertEquals("FREQ=DAILY;COUNT=5", row.rrule)
-        assertNotNull("EXDATE missing after instance-uri delete: ${row.exdate}", row.exdate)
-        assertTrue(
-            "EXDATE '${row.exdate}' does not cover instance start $second",
-            exdateCovers(row.exdate, second),
-        )
+        assertNull("no EXDATE may be hand-written for this scope", row.exdate)
 
-        // The deleted occurrence vanished; its neighbours remain.
+        // The deleted occurrence vanished from expansion; its neighbours remain.
         val expanded = occurrences(1, 7)
         assertTrue(expanded.none { it.eventId == parent && it.startMillis == second })
         assertTrue(expanded.any { it.eventId == parent && it.startMillis == third })
@@ -294,21 +301,21 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
     // ------------------------- interaction: delete-this then split keeps exclusions
 
     /**
-     * The §6.3 composition hazard: a this-instance delete lives in the
-     * parent's EXDATE string (not an exception row), so a later "this and
-     * following" split must carry it onto the continuation — otherwise the
-     * previously deleted occurrence resurrects in the tail.
+     * The §6.3 composition hazard: a this-instance delete lives in a canceled
+     * exception ROW (not the parent's EXDATE string), so a later "this and
+     * following" split must re-point that row onto the continuation —
+     * otherwise the previously deleted occurrence resurrects in the tail.
      */
     @Test
-    fun delete_thisInstance_then_split_thisAndFollowing_moves_exdate_onto_the_continuation() =
+    fun delete_thisInstance_then_split_thisAndFollowing_moves_exclusion_onto_the_continuation() =
         runBlocking {
             // Never-ended twin: COUNT-bounded series may not be split (KDoc).
             val parent = dailySeries("FREQ=DAILY")
             val third = seriesStart + 2 * dayMillis
             val fifth = seriesStart + 4 * dayMillis
 
-            // 1) Delete occurrence #5 through the provider — instance-uri
-            //    delete; CalendarProvider2 writes EXDATE on the parent row.
+            // 1) Delete occurrence #5 through the provider — a canceled
+            //    exception via CONTENT_EXCEPTION_URI (the AOSP path).
             val deleteResolution = ScopeResolver.resolveDelete(
                 contextOf(parent),
                 RecurrenceScope.ThisInstance,
@@ -319,10 +326,13 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
                 deleteResolution is Resolution.DeleteInstanceUri,
             )
             editor().apply(deleteResolution)
-            assertNotNull(
-                "provider wrote no EXDATE for the deleted instance",
-                eventSnapshot(parent)!!.exdate,
+            val cancellation = canceledExceptionsFor(fifth)
+            assertEquals(
+                "no canceled exception recorded for the deleted instance",
+                1,
+                cancellation.size,
             )
+            assertEquals(parent, cancellation.single().originalId)
 
             // 2) Edit occurrence #3 with "this and following".
             val splitResolution = ScopeResolver.resolveEdit(
@@ -338,17 +348,18 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
             val outcome = editor().apply(splitResolution)
             val tailId = (outcome as RecurrenceEditor.Outcome.Written).touchedEventId!!
 
-            // 3) The exclusion rides on the CONTINUATION now, so #5 stays gone.
+            // 3) The exclusion moved as an exception ROW onto the CONTINUATION
+            //    (tail migration), so #5 stays gone; no EXDATE was ever written.
             val tail = eventSnapshot(tailId)!!
             assertEquals(third, tail.dtstart)
-            assertNotNull("continuation lost the deleted-instance exclusion", tail.exdate)
-            assertTrue(
-                "continuation EXDATE '${tail.exdate}' does not cover $fifth",
-                exdateCovers(tail.exdate, fifth),
-            )
-            assertFalse(
-                "stale exclusion lingered on the truncated parent",
-                exdateCovers(eventSnapshot(parent)!!.exdate, fifth),
+            assertNull("continuation must carry no hand-written EXDATE", tail.exdate)
+            assertNull("truncated parent must carry no hand-written EXDATE", eventSnapshot(parent)!!.exdate)
+            val movedCancellation = canceledExceptionsFor(fifth)
+            assertEquals(1, movedCancellation.size)
+            assertEquals(
+                "canceled exception must follow the continuation series",
+                tailId,
+                movedCancellation.single().originalId,
             )
 
             // 4) Instance view: #5 absent everywhere; the cut at #3 stays clean.
@@ -362,32 +373,14 @@ class RecurringScopeRoundTripTest : ProviderFixture() {
     // ------------------------------------------------------------------ helpers
 
     /**
-     * Tolerant EXDATE reader per WS12 brief: comma-separated RFC 5545 tokens
-     * in date-only, local-date-time or UTC-date-time form; parse failures
-     * simply do not match rather than throwing.
+     * Exception rows recording a canceled (deleted) occurrence of the series:
+     * ORIGINAL_INSTANCE_TIME names the slot, STATUS marks the cancellation.
+     * This is the NEW delete-this-instance contract (14.2) — the exclusion is
+     * a row the provider suppresses expansion for, not an EXDATE string.
      */
-    private fun exdateCovers(exdate: String?, expected: Long): Boolean =
-        exdate.orEmpty()
-            .split(',')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .any { token -> token.toEpochMillisUtc() == expected }
-
-    private fun String.toEpochMillisUtc(): Long? =
-        try {
-            when (length) {
-                8 -> LocalDate.parse(this, DateTimeFormatter.BASIC_ISO_DATE)
-                    .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-
-                15 -> LocalDateTime.parse(this, DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss"))
-                    .toInstant(ZoneOffset.UTC).toEpochMilli()
-
-                16 -> LocalDateTime.parse(this, DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'"))
-                    .toInstant(ZoneOffset.UTC).toEpochMilli()
-
-                else -> null
-            }
-        } catch (_: Exception) {
-            null
-        }
+    private fun canceledExceptionsFor(instanceMillis: Long): List<EventRowSnapshot> =
+        eventsWhere(
+            "${Events.ORIGINAL_INSTANCE_TIME}=? AND ${Events.STATUS}=?",
+            arrayOf(instanceMillis.toString(), Events.STATUS_CANCELED.toString()),
+        )
 }

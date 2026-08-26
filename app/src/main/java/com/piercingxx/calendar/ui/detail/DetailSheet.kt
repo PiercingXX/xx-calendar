@@ -60,13 +60,14 @@ import com.piercingxx.calendar.core.TimeMath
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.editor.RefusalDialog
 import com.piercingxx.calendar.ui.editor.ScopePrompt
+import com.piercingxx.calendar.ui.editor.allDayExclusiveEndMillis
+import com.piercingxx.calendar.ui.editor.atOccurrence
 import com.piercingxx.calendar.ui.theme.Body
 import com.piercingxx.calendar.ui.theme.CalendarColors
 import com.piercingxx.calendar.ui.theme.EventTitle
 import com.piercingxx.calendar.ui.theme.JetBrainsMono
 import com.piercingxx.calendar.ui.theme.Label
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
-import com.piercingxx.calendar.ui.editor.ZONE_UTC
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -85,15 +86,20 @@ import kotlinx.coroutines.withContext
  * Delete of a recurring event raises the §6.3 scope prompt; a plain row
  * deletes with an Undo snackbar that re-inserts the captured draft plus its
  * opaque columns verbatim (D8).
+ *
+ * [instanceStartMillis] is the BEGIN of the tapped occurrence (14.1): the
+ * scoped delete and the edit/duplicate hand-offs stamp that occurrence
+ * instead of the series anchor. Null falls back to parent DTSTART.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailSheet(
     eventId: Long,
+    instanceStartMillis: Long? = null,
     repository: CalendarRepository,
     onClose: () -> Unit,
-    onEdit: (Long) -> Unit,
-    onDuplicate: (Long) -> Unit,
+    onEdit: (Long, Long?) -> Unit,
+    onDuplicate: (Long, Long?) -> Unit,
 ) {
     val colors = LocalCalendarColors.current
     val context = LocalContext.current
@@ -186,7 +192,10 @@ fun DetailSheet(
                     allDay = current.draft.allDay,
                 ),
                 scope = chosen,
-                instance = InstanceRef(current.eventId, current.draft.startMillis),
+                instance = InstanceRef(
+                    current.eventId,
+                    instanceStartMillis ?: current.draft.startMillis,
+                ),
             )
             when (val outcome = executor.apply(resolution)) {
                 is RecurrenceEditor.Outcome.Written -> closeSheet()
@@ -250,9 +259,20 @@ fun DetailSheet(
                             color = colors.text,
                         )
 
-                        // Time (+ timezone only when it differs from device, §6.4)
+                        // Time (+ timezone only when it differs from device, §6.4).
+                        // The tapped occurrence's own times, not the series
+                        // anchor's: the raw row would show occurrence #1 no
+                        // matter which block was tapped (14.1/F2). Null or a
+                        // non-recurring row falls back to the draft untouched.
                         Spacer(Modifier.height(6.dp))
-                        Text(detailTimeText(draft, zone), style = Body, color = colors.strong)
+                        Text(
+                            detailTimeText(
+                                current.atOccurrence(instanceStartMillis).draft,
+                                zone,
+                            ),
+                            style = Body,
+                            color = colors.strong,
+                        )
                         if (!draft.allDay &&
                             TimeMath.shouldRenderTimezone(draft.eventTimezone, zone.id)
                         ) {
@@ -343,10 +363,10 @@ fun DetailSheet(
                                 style = Body,
                                 color = colors.text,
                                 modifier = Modifier
-                                    .clickable {
-                                        closeSheet()
-                                        onEdit(eventId)
-                                    }
+                                .clickable {
+                                    closeSheet()
+                                    onEdit(eventId, instanceStartMillis)
+                                }
                                     .padding(vertical = 10.dp),
                             )
                             Spacer(Modifier.width(28.dp))
@@ -357,7 +377,7 @@ fun DetailSheet(
                                 modifier = Modifier
                                     .clickable {
                                         closeSheet()
-                                        onDuplicate(eventId)
+                                        onDuplicate(eventId, instanceStartMillis)
                                     }
                                     .padding(vertical = 10.dp),
                             )
@@ -426,20 +446,23 @@ private fun SigilTier?.rampColor(colors: CalendarColors) =
 private val RANGE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM  HH:mm")
 private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
 
-private fun detailTimeText(draft: EventDraft, zone: ZoneId): String {
-    val start = Instant.ofEpochMilli(draft.startMillis).atZone(zone)
-    return if (draft.allDay) {
-        // DTEND is exclusive on all-day rows (§6.4).
-        val endDate = draft.endMillis?.let {
-            Instant.ofEpochMilli(it).atZone(ZONE_UTC).toLocalDate().minusDays(1)
+internal fun detailTimeText(draft: EventDraft, zone: ZoneId): String =
+    if (draft.allDay) {
+        // Both ends are UTC-midnight storage (§6.4); both must be read at UTC
+        // or a device west of UTC renders the start a day early and a span can
+        // disagree with itself. Matches EditorForm.fromLoaded (15.2).
+        val startDate = TimeMath.storageToAllDayDate(draft.startMillis)
+        val endDate = draft.allDayExclusiveEndMillis()?.let {
+            TimeMath.storageToAllDayDate(it).minusDays(1)
         }
-        val base = if (endDate != null && endDate != start.toLocalDate()) {
-            "${start.format(DATE_FORMAT)} - ${endDate.format(DATE_FORMAT)}"
+        val base = if (endDate != null && endDate != startDate) {
+            "${startDate.format(DATE_FORMAT)} - ${endDate.format(DATE_FORMAT)}"
         } else {
-            start.format(DATE_FORMAT)
+            startDate.format(DATE_FORMAT)
         }
         "$base · all-day"
     } else {
+        val start = Instant.ofEpochMilli(draft.startMillis).atZone(zone)
         val endInstant = draft.endMillis?.let { Instant.ofEpochMilli(it) }
         if (endInstant == null) {
             start.format(RANGE_FORMAT)
@@ -452,7 +475,6 @@ private fun detailTimeText(draft: EventDraft, zone: ZoneId): String {
             }
         }
     }
-}
 
 private val TIME_ONLY: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 

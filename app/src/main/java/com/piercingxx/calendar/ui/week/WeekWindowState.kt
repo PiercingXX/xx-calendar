@@ -4,17 +4,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.setValue
+import java.time.DayOfWeek
 import java.time.LocalDate
 
 /**
  * The visible week of the week view (design §8.3), owned by the screen.
- * Weeks are Monday-anchored — the §8.6 default start day — and always span
- * exactly seven columns; the grid compresses column width instead of
- * scrolling horizontally.
+ * Weeks anchor to [firstDayOfWeek] — §8.6's start day of week, exactly like
+ * [com.piercingxx.calendar.ui.month.MonthScreen] — and always span exactly
+ * seven columns; the grid compresses column width instead of scrolling
+ * horizontally. Defaults to Monday (the §8.6 default), so call sites that do
+ * not pass the setting yet keep today's behavior (15.6).
  */
-class WeekWindowState {
+class WeekWindowState(firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY) {
 
-    var weekStartDay: Long by mutableLongStateOf(mondayOf(LocalDate.now()).toEpochDay())
+    /** First column of every rendered week. */
+    val firstDayOfWeek: DayOfWeek = firstDayOfWeek
+
+    var weekStartDay: Long by mutableLongStateOf(
+        weekStartOf(LocalDate.now(), firstDayOfWeek).toEpochDay(),
+    )
         private set
 
     /** Bumped on provider changes to force a re-query of the visible week. */
@@ -32,7 +40,7 @@ class WeekWindowState {
     }
 
     fun jumpTo(date: LocalDate) {
-        weekStartDay = mondayOf(date).toEpochDay()
+        weekStartDay = weekStartOf(date, firstDayOfWeek).toEpochDay()
     }
 
     fun forceRefresh() {
@@ -40,8 +48,8 @@ class WeekWindowState {
     }
 
     companion object {
-        /** ISO Monday of the week holding [date]. */
-        fun mondayOf(date: LocalDate): LocalDate =
-            date.minusDays(((date.dayOfWeek.value + 6) % 7).toLong())
+        /** First day of the week holding [date], when weeks start on [startOfWeek]. */
+        fun weekStartOf(date: LocalDate, startOfWeek: DayOfWeek): LocalDate =
+            date.minusDays(((date.dayOfWeek.value + 7 - startOfWeek.value) % 7).toLong())
     }
 }

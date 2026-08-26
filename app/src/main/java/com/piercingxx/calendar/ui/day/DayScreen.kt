@@ -29,6 +29,8 @@ import com.piercingxx.calendar.core.SigilAssigner
 import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
 import com.piercingxx.calendar.settings.Settings as AppSettings
+import com.piercingxx.calendar.detailRoute
+import com.piercingxx.calendar.editorRoute
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
@@ -43,7 +45,8 @@ import kotlinx.coroutines.launch
  * Day view (design §8.3): one time-grid column for the visible day, all-day
  * events pinned above, in-screen window navigation. The screen owns its
  * visible date and its write path; [onNavigate] receives the app's routes
- * ("editor/new?start=..&end=.." after a create gesture, "detail/{id}" on tap).
+ * ("editor/new?start=..&end=.." after a create gesture, "detail/{id}?start="
+ * on tap — 14.1 occurrence identity).
  */
 @Composable
 fun DayScreen(
@@ -137,7 +140,11 @@ fun DayScreen(
         DaysHeaderRow(columns, today = TimeMath.localDateOf(nowMillis, zone))
         Box(Modifier.fillMaxWidth().height(1.dp).background(colors.line))
         if (columns.any { it.allDay.isNotEmpty() }) {
-            AllDayRow(columns, sigils, calendarsById, onEventClick = { id -> onNavigate("detail/$id") })
+            // 14.1: the row callback carries the tapped occurrence's BEGIN
+            // directly — no lookup needed (handoff note b).
+            AllDayRow(columns, sigils, calendarsById, onEventClick = { id, start ->
+                onNavigate(detailRoute(id, start))
+            })
         }
         TimeGrid(
             columns = columns,
@@ -148,10 +155,27 @@ fun DayScreen(
             onCreateSlot = { _, startMillis, endMillis ->
                 onNavigate("editor/new?start=$startMillis&end=$endMillis")
             },
-            onEventMoved = { eventId, startMillis, endMillis ->
+            onEventMoved = { eventId, draggedInstanceStart, startMillis, endMillis ->
                 scope.launch {
-                    runCatching { repository.moveTimedEvent(eventId, startMillis, endMillis) }
-                    state.forceRefresh()
+                    // Recurring rows are refused (a drag must not rewrite the
+                    // series); the editor is where the §6.3 scope prompt lives,
+                    // opened at the DRAGGED occurrence so it stamps that
+                    // instance's begin, not the series anchor (F3).
+                    val moved = runCatching {
+                        repository.moveTimedEvent(eventId, startMillis, endMillis)
+                    }.getOrDefault(false)
+                    if (moved) {
+                        state.forceRefresh()
+                    } else {
+                        onNavigate(
+                            editorRoute(
+                                eventId,
+                                draggedInstanceStart,
+                                dropStartMillis = startMillis,
+                                dropEndMillis = endMillis,
+                            ),
+                        )
+                    }
                 }
             },
             onEventResized = { eventId, startMillis, endMillis ->
@@ -160,7 +184,7 @@ fun DayScreen(
                     state.forceRefresh()
                 }
             },
-            onEventClick = { id -> onNavigate("detail/$id") },
+            onEventClick = { id, start -> onNavigate(detailRoute(id, start)) },
             modifier = Modifier.weight(1f),
             scrollState = scrollState,
         )

@@ -173,9 +173,21 @@ fun TimeGrid(
     nowMillis: Long,
     zone: ZoneId,
     onCreateSlot: (LocalDate, Long, Long) -> Unit,
-    onEventMoved: (Long, Long, Long) -> Unit,
+    // F3: moves carry the DRAGGED block's original instance BEGIN alongside
+    // the new slot, so a recurring refusal can hand the §6.3 scope prompt the
+    // occurrence actually dragged instead of falling back to the series anchor.
+    onEventMoved: (
+        eventId: Long,
+        draggedInstanceStartMillis: Long,
+        newStartMillis: Long,
+        newEndMillis: Long,
+    ) -> Unit,
     onEventResized: (Long, Long, Long) -> Unit,
-    onEventClick: (Long) -> Unit,
+    // 14.1 / handoff note b: grid taps carry the tapped occurrence's BEGIN so
+    // DetailSheet opens the instance actually tapped, not the series anchor.
+    // The placed block holds the full CalendarInstance, so the begin is local
+    // data — no first-match lookup needed.
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
     modifier: Modifier = Modifier,
     scrollState: ScrollState = rememberScrollState(),
 ) {
@@ -226,8 +238,17 @@ fun TimeGrid(
                                 if (instance.duration != null || instance.rrule != null ||
                                     originalStartMinute != startMinute
                                 ) {
-                                    // Move (recurring events shift the series; extent lives in DURATION).
-                                    onEventMoved(instance.eventId, newStart, newEnd)
+                                    // Move. Recurring rows are refused by moveTimedEvent
+                                    // (a drag must never shift the whole series); the
+                                    // screen routes them through the editor, where
+                                    // the §6.3 scope prompt lives — stamped with
+                                    // this dragged occurrence's begin.
+                                    onEventMoved(
+                                        instance.eventId,
+                                        instance.startMillis,
+                                        newStart,
+                                        newEnd,
+                                    )
                                 } else {
                                     onEventResized(instance.eventId, newStart, newEnd)
                                 }
@@ -282,7 +303,7 @@ private fun DayColumn(
     onPreview: (GesturePreview?) -> Unit,
     onCreateSlot: (Int, Int) -> Unit,
     onTransformFinished: (CalendarInstance, Int, Int) -> Unit,
-    onEventClick: (Long) -> Unit,
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
 ) {
     val colors = LocalCalendarColors.current
     val density = LocalDensity.current
@@ -344,7 +365,7 @@ private fun DayColumn(
                 past = block.instance.endMillis < System.currentTimeMillis(),
                 onPreview = onPreview,
                 onTransformFinished = onTransformFinished,
-                onClick = { onEventClick(block.instance.eventId) },
+                onClick = { onEventClick(block.instance.eventId, block.instance.startMillis) },
             )
         }
 
@@ -589,7 +610,8 @@ fun AllDayRow(
     columns: List<GridColumn>,
     sigils: Map<CalendarKey, SigilTier>,
     calendarsById: Map<Long, CalendarSummary>,
-    onEventClick: (Long) -> Unit,
+    // 14.1 / handoff note b: same occurrence identity as the grid taps.
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalCalendarColors.current
@@ -604,7 +626,9 @@ fun AllDayRow(
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 22.dp)
                             .background(colors.inkRaised)
-                            .clickable { onEventClick(instance.eventId) },
+                            .clickable {
+                                onEventClick(instance.eventId, instance.startMillis)
+                            },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(Modifier.width(BLOCK_BAR_WIDTH).height(16.dp).background(tier?.rampColor(colors) ?: colors.shade))

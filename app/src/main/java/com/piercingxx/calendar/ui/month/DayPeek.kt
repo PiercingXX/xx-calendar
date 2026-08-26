@@ -54,7 +54,9 @@ internal fun DayPeek(
     tiersByCalendarId: Map<Long, SigilTier>,
     nowMillis: Long,
     zone: ZoneId,
-    onEventClick: (Long) -> Unit,
+    // 14.1: the row carries the tapped occurrence's BEGIN directly, so the
+    // caller needs no first-match lookup in the peeked day's list.
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalCalendarColors.current
@@ -94,7 +96,7 @@ private fun PeekRow(
     tiersByCalendarId: Map<Long, SigilTier>,
     nowMillis: Long,
     zone: ZoneId,
-    onEventClick: (Long) -> Unit,
+    onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
 ) {
     val colors = LocalCalendarColors.current
     val tier = tiersByCalendarId[instance.calendarId]
@@ -103,7 +105,7 @@ private fun PeekRow(
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 34.dp)
-            .clickable { onEventClick(instance.eventId) }
+            .clickable { onEventClick(instance.eventId, instance.startMillis) }
             .padding(horizontal = 16.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
