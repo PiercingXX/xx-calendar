@@ -188,7 +188,13 @@ fun TimeGrid(
     val todayColumn = columns.firstOrNull { it.date == today }
 
     Box(modifier.fillMaxSize().clipToBounds()) {
-        Row(Modifier.height(HOUR_HEIGHT * 24).verticalScroll(scrollState)) {
+        // Order is load-bearing: verticalScroll first, then the height. Written
+        // the other way round the height sizes the scroll viewport itself to a
+        // full 24 hours, the content fits it exactly, and there is nothing left
+        // to scroll — the grid just clips at the bottom of the screen. Scroll
+        // first and the viewport takes the parent's constraints while the
+        // content stays 24 hours tall, which is what makes it scrollable.
+        Row(Modifier.verticalScroll(scrollState).height(HOUR_HEIGHT * 24)) {
             HourGutter(pxPerMinute = pxPerMinute)
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 Row(Modifier.fillMaxSize()) {
