@@ -348,7 +348,18 @@ private fun describe(rule: RRuleModel): String {
             else -> "monthly"
         }
 
-        Frequency.YEARLY -> if (rule.interval > 1) "every ${rule.interval} years" else "annually"
+        Frequency.YEARLY -> {
+            val stem = if (rule.interval > 1) "every ${rule.interval} years" else "annually"
+            val monthNames = rule.byMonth.map { monthName(it) }
+            val days = rule.byMonthDay.joinToString(", ") { ordinalWord(it) }
+            when {
+                monthNames.isNotEmpty() && days.isNotEmpty() ->
+                    "$stem on $days of ${monthNames.joinToString(", ")}"
+                monthNames.isNotEmpty() -> "$stem in ${monthNames.joinToString(", ")}"
+                days.isNotEmpty() -> "$stem on the $days"
+                else -> stem
+            }
+        }
     }
     return when (val end = rule.end) {
         is EndCondition.Until ->
@@ -404,6 +415,13 @@ fun nthWord(nth: Int): String = when (nth) {
     -1 -> "last"
     else -> ordinalWord(nth)
 }
+
+private fun monthName(month: Int): String =
+    if (month in 1..12) {
+        java.time.Month.of(month).getDisplayName(TextStyle.FULL, Locale.getDefault())
+    } else {
+        month.toString()
+    }
 
 fun reminderLabel(minutes: Int): String = when {
     minutes == 0 -> "at time of event"

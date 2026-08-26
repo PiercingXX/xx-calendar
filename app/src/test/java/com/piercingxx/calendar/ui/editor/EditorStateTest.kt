@@ -294,4 +294,100 @@ class EditorStateTest {
         assertNull(timedDraft.endMillis)
         assertEquals("PT30M", timedDraft.duration)
     }
+
+    @Test
+    fun `fromLoaded models Google WKST yearly birthdays`() {
+        val draft = EventDraft(
+            calendarId = 1L,
+            startMillis = TimeMath.allDayDateToStorage(LocalDate.of(2026, 7, 3)),
+            endMillis = TimeMath.allDayDateToStorage(LocalDate.of(2026, 7, 4)),
+            eventTimezone = "UTC",
+            eventId = 1L,
+            title = "Monkey",
+            allDay = true,
+            rrule = "FREQ=YEARLY;WKST=MO;BYMONTHDAY=3;BYMONTH=7",
+        )
+        val form = EditorForm.fromLoaded(
+            LoadedEvent(draft, OpaqueColumns.HeldValues.EMPTY),
+            zone,
+        )
+        assertFalse(form.ruleUnreadable)
+        assertNotNull(form.rule)
+        assertEquals(Frequency.YEARLY, form.rule!!.frequency)
+        assertEquals(Weekday.MO, form.rule!!.weekStart)
+        assertEquals(listOf(7), form.rule!!.byMonth)
+        assertEquals(listOf(3), form.rule!!.byMonthDay)
+        assertEquals(
+            "FREQ=YEARLY;BYMONTHDAY=3;BYMONTH=7;WKST=MO",
+            form.rule!!.serialize(),
+        )
+    }
+
+    @Test
+    fun `fromLoaded models a Google weekly-at-the-same-time series`() {
+        // The shape that produced "this app does not model" on a real
+        // DAVx⁵/Google weekly event: FREQ + WKST, no BYDAY, DTSTART is the day.
+        val form = EditorForm.fromLoaded(
+            LoadedEvent(
+                recurringTimed.copy(rrule = "FREQ=WEEKLY;WKST=MO"),
+                OpaqueColumns.HeldValues.EMPTY,
+            ),
+            zone,
+        )
+        assertFalse(
+            "WKST weekly must be editable, not refused as unreadable",
+            form.ruleUnreadable,
+        )
+        assertEquals(Frequency.WEEKLY, form.rule!!.frequency)
+        assertEquals(Weekday.MO, form.rule!!.weekStart)
+        assertTrue(form.rule!!.byDay.isEmpty())
+        assertEquals("FREQ=WEEKLY;WKST=MO", form.rule!!.serialize())
+    }
+
+    @Test
+    fun `fromLoaded models every-other-week WKST=SU`() {
+        val form = EditorForm.fromLoaded(
+            LoadedEvent(recurringTimed.copy(rrule = "FREQ=WEEKLY;INTERVAL=2;WKST=SU;BYDAY=SU"), OpaqueColumns.HeldValues.EMPTY),
+            zone,
+        )
+        assertFalse(form.ruleUnreadable)
+        assertEquals(2, form.rule!!.interval)
+        assertEquals(Weekday.SU, form.rule!!.weekStart)
+        assertEquals(listOf(Weekday.SU), form.rule!!.byDay.map { it.weekday })
+    }
+
+    @Test
+    fun `custom builder keeps WKST and yearly month on a loaded birthday`() {
+        val initial = (com.piercingxx.calendar.core.RRuleModel.parse(
+            "FREQ=YEARLY;WKST=MO;BYMONTHDAY=3;BYMONTH=7",
+        ) as com.piercingxx.calendar.core.RuleParse.Parsed).rule
+        val rebuilt = buildCustomRule(
+            frequency = Frequency.YEARLY,
+            interval = 1,
+            weeklyDays = emptySet(),
+            monthlyByDate = true,
+            monthDay = 3,
+            nthOrdinal = 1,
+            endKind = EndKind.Never,
+            untilDate = LocalDate.of(2026, 9, 30),
+            count = 10,
+            anchorDate = LocalDate.of(2026, 7, 3),
+            allDay = true,
+            weekStart = initial.weekStart,
+            byMonth = initial.byMonth,
+            byMonthDayYearly = initial.byMonthDay,
+        )
+        assertEquals(initial, rebuilt)
+    }
+
+    @Test
+    fun `toggleWeeklyDay cannot drop the last day`() {
+        val only = setOf(Weekday.MO)
+        assertEquals(only, toggleWeeklyDay(only, Weekday.MO, wantOn = false))
+        assertEquals(setOf(Weekday.MO, Weekday.WE), toggleWeeklyDay(only, Weekday.WE, wantOn = true))
+        assertEquals(
+            setOf(Weekday.MO),
+            toggleWeeklyDay(setOf(Weekday.MO, Weekday.WE), Weekday.WE, wantOn = false),
+        )
+    }
 }

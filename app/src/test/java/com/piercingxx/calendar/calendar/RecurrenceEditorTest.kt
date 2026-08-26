@@ -258,6 +258,29 @@ class RecurrenceEditorTest {
     }
 
     @Test
+    fun `splitParent truncates a Google WKST weekly series`() = runTest {
+        coEvery { repository.loadEvent(parentId) } returns
+            LoadedEvent(recurringDraft.copy(rrule = "FREQ=WEEKLY;WKST=MO"), opaque)
+
+        val outcome = editor.apply(
+            Resolution.SplitParent(
+                parentEventId = parentId,
+                newUntil = EndCondition.Until(instanceStart - 1),
+                newRowStartMillis = instanceStart,
+                newRowEdits = EventFieldEdits(),
+                remainingRule = RRuleModel(frequency = Frequency.WEEKLY, weekStart = Weekday.MO),
+            ),
+        )
+
+        assertTrue(outcome is RecurrenceEditor.Outcome.Written)
+        assertEquals(
+            "FREQ=WEEKLY;WKST=MO;UNTIL=20260817T135959Z",
+            savedDrafts[0].rrule,
+        )
+        assertEquals("FREQ=WEEKLY;WKST=MO", savedDrafts[1].rrule)
+    }
+
+    @Test
     fun `splitParent repoints tail exception rows onto the inserted series`() = runTest {
         coEvery { repository.loadEvent(parentId) } returns loaded()
         val newRowId = 777L

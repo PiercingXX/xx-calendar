@@ -112,6 +112,24 @@ class RRuleModelTest {
             byDay = listOf(ByDay(null, Weekday.MO), ByDay(null, Weekday.FR)),
             end = EndCondition.Count(occurrences = 6),
         ),
+        RRuleModel(Frequency.YEARLY, weekStart = Weekday.MO),
+        RRuleModel(
+            Frequency.YEARLY,
+            byMonthDay = listOf(3),
+            byMonth = listOf(7),
+            weekStart = Weekday.MO,
+        ),
+        RRuleModel(
+            Frequency.WEEKLY,
+            interval = 2,
+            byDay = listOf(ByDay(null, Weekday.SU)),
+            weekStart = Weekday.SU,
+        ),
+        RRuleModel(
+            Frequency.MONTHLY,
+            byDay = listOf(ByDay(null, Weekday.MO)),
+            bySetPos = listOf(1),
+        ),
     )
 
     @Test
@@ -274,13 +292,86 @@ class RRuleModelTest {
     }
 
     @Test
-    fun `unknown parts are refused naming the part`() {
-        for (part in listOf("BYSETPOS=1", "BYMONTH=3", "WKST=MO")) {
+    fun `sub-daily and exotic parts are refused naming the part`() {
+        for (part in listOf("BYHOUR=9", "BYMINUTE=0", "BYSECOND=13", "BYYEARDAY=1", "BYWEEKNO=12")) {
             val key = part.substringBefore('=')
             val reason = refusedReason("FREQ=DAILY;$part")
             assertTrue(
                 "refusal should name $key, was: $reason",
                 reason.contains(key, ignoreCase = true),
+            )
+        }
+    }
+
+    @Test
+    fun `WKST BYMONTH and BYSETPOS parse and round-trip`() {
+        assertParsesTo(
+            "FREQ=YEARLY;WKST=MO",
+            RRuleModel(Frequency.YEARLY, weekStart = Weekday.MO),
+        )
+        assertParsesTo(
+            "FREQ=YEARLY;WKST=MO;BYMONTHDAY=3;BYMONTH=7",
+            RRuleModel(
+                Frequency.YEARLY,
+                byMonthDay = listOf(3),
+                byMonth = listOf(7),
+                weekStart = Weekday.MO,
+            ),
+        )
+        assertEquals(
+            "FREQ=YEARLY;BYMONTHDAY=3;BYMONTH=7;WKST=MO",
+            (RRuleModel.parse("FREQ=YEARLY;WKST=MO;BYMONTHDAY=3;BYMONTH=7") as RuleParse.Parsed)
+                .rule.serialize(),
+        )
+        val weekly = RRuleModel.parse("FREQ=WEEKLY;INTERVAL=2;WKST=SU;BYDAY=SU")
+        assertTrue(weekly is RuleParse.Parsed)
+        assertEquals(Weekday.SU, (weekly as RuleParse.Parsed).rule.weekStart)
+        assertEquals("FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;WKST=SU", weekly.rule.serialize())
+
+        val setpos = RRuleModel.parse("FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1,-1")
+        assertTrue(setpos is RuleParse.Parsed)
+        assertEquals(listOf(1, -1), (setpos as RuleParse.Parsed).rule.bySetPos)
+        assertEquals("FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1,-1", setpos.rule.serialize())
+    }
+
+    @Test
+    fun `RRULE prefix is stripped`() {
+        assertParsesTo("RRULE:FREQ=DAILY", RRuleModel.daily())
+        assertParsesTo("rrule:FREQ=WEEKLY;WKST=mo", RRuleModel(Frequency.WEEKLY, weekStart = Weekday.MO))
+    }
+
+    @Test
+    fun `WKST and BYMONTH out of range are refused`() {
+        assertTrue(RRuleModel.parse("FREQ=DAILY;WKST=XX") is RuleParse.Refused)
+        assertTrue(RRuleModel.parse("FREQ=YEARLY;BYMONTH=0") is RuleParse.Refused)
+        assertTrue(RRuleModel.parse("FREQ=YEARLY;BYMONTH=13") is RuleParse.Refused)
+        assertTrue(RRuleModel.parse("FREQ=MONTHLY;BYSETPOS=0") is RuleParse.Refused)
+        assertTrue(RRuleModel.parse("FREQ=MONTHLY;BYSETPOS=367") is RuleParse.Refused)
+    }
+
+    @Test
+    fun `Google Calendar rules from a real account parse`() {
+        val rules = listOf(
+            "FREQ=YEARLY;WKST=MO",
+            "FREQ=DAILY;UNTIL=20250904T035959Z;WKST=MO",
+            "FREQ=WEEKLY;WKST=MO",
+            "FREQ=WEEKLY;UNTIL=20250904T035959Z;WKST=MO",
+            "FREQ=WEEKLY;UNTIL=20250518T035959Z;INTERVAL=2;WKST=SU;BYDAY=SU",
+            "FREQ=WEEKLY;INTERVAL=2;WKST=SU;BYDAY=SU",
+            "FREQ=WEEKLY;UNTIL=20250905T035959Z;WKST=MO",
+            "FREQ=WEEKLY;UNTIL=20250908T035959Z;WKST=MO",
+            "FREQ=WEEKLY;UNTIL=20250909T035959Z;WKST=MO",
+            "FREQ=WEEKLY;UNTIL=20250910T035959Z;WKST=MO",
+            "FREQ=YEARLY;WKST=MO;BYMONTHDAY=3;BYMONTH=7",
+        )
+        for (raw in rules) {
+            val parsed = RRuleModel.parse(raw)
+            assertTrue("expected Parsed for \"$raw\" but was $parsed", parsed is RuleParse.Parsed)
+            val again = RRuleModel.parse((parsed as RuleParse.Parsed).rule.serialize())
+            assertEquals(
+                "round-trip drifted for \"$raw\" -> ${parsed.rule.serialize()}",
+                parsed.rule,
+                (again as RuleParse.Parsed).rule,
             )
         }
     }

@@ -40,16 +40,23 @@ sealed interface RuleParse {
  * the editor's rule builder (design §8.5). Pure JVM — no Android dependency.
  *
  * Wire form is the CalendarProvider RRULE value, canonical order:
- * `FREQ[;INTERVAL][;BYDAY][;BYMONTHDAY][;UNTIL|COUNT]` — UNTIL rendered as
- * UTC DATE-TIME `yyyyMMdd'T'HHmmss'Z'`, or basic DATE `yyyyMMdd` when the
- * series is all-day ([EndCondition.Until.dateOnly]); date-only input is
- * normalised to UTC midnight.
+ * `FREQ[;INTERVAL][;BYDAY][;BYMONTHDAY][;BYMONTH][;BYSETPOS][;WKST][;UNTIL|COUNT]`
+ * — UNTIL rendered as UTC DATE-TIME `yyyyMMdd'T'HHmmss'Z'`, or basic DATE
+ * `yyyyMMdd` when the series is all-day ([EndCondition.Until.dateOnly]);
+ * date-only input is normalised to UTC midnight.
+ *
+ * [weekStart], [byMonth] and [bySetPos] are the RFC 5545 parts Google Calendar
+ * and DAVx⁵ actually emit. Refusing them made every real repeating event
+ * unreadable, which blocked every scoped write.
  */
 data class RRuleModel(
     val frequency: Frequency,
     val interval: Int = 1,
     val byDay: List<ByDay> = emptyList(),
     val byMonthDay: List<Int> = emptyList(),
+    val byMonth: List<Int> = emptyList(),
+    val bySetPos: List<Int> = emptyList(),
+    val weekStart: Weekday? = null,
     val end: EndCondition = EndCondition.Never,
 ) {
     fun serialize(): String {
@@ -57,6 +64,9 @@ data class RRuleModel(
         if (interval > 1) parts += "INTERVAL=$interval"
         if (byDay.isNotEmpty()) parts += "BYDAY=" + byDay.joinToString(",") { it.toToken() }
         if (byMonthDay.isNotEmpty()) parts += "BYMONTHDAY=" + byMonthDay.joinToString(",")
+        if (byMonth.isNotEmpty()) parts += "BYMONTH=" + byMonth.joinToString(",")
+        if (bySetPos.isNotEmpty()) parts += "BYSETPOS=" + bySetPos.joinToString(",")
+        if (weekStart != null) parts += "WKST=$weekStart"
         when (val condition = end) {
             is EndCondition.Until -> parts += "UNTIL=" +
                 (
@@ -108,7 +118,10 @@ data class RRuleModel(
         }
 
         private fun parseParts(raw: String): RuleParse {
-            val trimmed = raw.trim()
+            var trimmed = raw.trim()
+            if (trimmed.startsWith("RRULE:", ignoreCase = true)) {
+                trimmed = trimmed.substring(6).trim()
+            }
             if (trimmed.isEmpty()) return RuleParse.Refused("rule is empty")
 
             var frequency: Frequency? = null
@@ -116,8 +129,11 @@ data class RRuleModel(
             var untilMillis: Long? = null
             var untilDateOnly: Boolean = false
             var count: Int? = null
+            var weekStart: Weekday? = null
             val byDay = mutableListOf<ByDay>()
             val byMonthDay = mutableListOf<Int>()
+            val byMonth = mutableListOf<Int>()
+            val bySetPos = mutableListOf<Int>()
 
             for (rawPart in trimmed.split(';')) {
                 val part = rawPart.trim()
@@ -172,6 +188,40 @@ data class RRuleModel(
                             }
                             byMonthDay += day
                         }
+                    }
+
+                    "BYMONTH" -> {
+                        for (token in value.split(',')) {
+                            val month = token.trim().toIntOrNull()
+                                ?: return RuleParse.Refused(
+                                    "BYMONTH must be an integer, was \"$token\"",
+                                )
+                            if (month !in 1..12) {
+                                return RuleParse.Refused("BYMONTH must be 1..12, was $month")
+                            }
+                            byMonth += month
+                        }
+                    }
+
+                    "BYSETPOS" -> {
+                        for (token in value.split(',')) {
+                            val pos = token.trim().toIntOrNull()
+                                ?: return RuleParse.Refused(
+                                    "BYSETPOS must be an integer, was \"$token\"",
+                                )
+                            if (pos == 0 || pos !in -366..366) {
+                                return RuleParse.Refused(
+                                    "BYSETPOS must be 1..366 or -1..-366, was $pos",
+                                )
+                            }
+                            bySetPos += pos
+                        }
+                    }
+
+                    "WKST" -> {
+                        val weekday = Weekday.entries.firstOrNull { it.name == value.uppercase() }
+                            ?: return RuleParse.Refused("WKST must be a weekday, was \"$value\"")
+                        weekStart = weekday
                     }
 
                     "UNTIL" -> {
@@ -229,6 +279,9 @@ data class RRuleModel(
                     interval = interval ?: 1,
                     byDay = byDay.toList(),
                     byMonthDay = byMonthDay.toList(),
+                    byMonth = byMonth.toList(),
+                    bySetPos = bySetPos.toList(),
+                    weekStart = weekStart,
                     end = end,
                 ),
             )

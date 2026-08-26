@@ -156,8 +156,14 @@ internal fun buildCustomRule(
     count: Int,
     anchorDate: LocalDate,
     allDay: Boolean,
+    weekStart: Weekday? = null,
+    byMonth: List<Int> = emptyList(),
+    byMonthDayYearly: List<Int> = emptyList(),
+    bySetPos: List<Int> = emptyList(),
 ): RRuleModel {
     val primaryDay = weeklyDays.firstOrNull() ?: weekdayOf(anchorDate)
+    val yearly = frequency == Frequency.YEARLY
+    val monthly = frequency == Frequency.MONTHLY
     val base = when (frequency) {
         Frequency.DAILY -> RRuleModel(frequency = Frequency.DAILY, interval = interval)
 
@@ -183,9 +189,18 @@ internal fun buildCustomRule(
                 )
             }
 
-        Frequency.YEARLY -> RRuleModel(frequency = Frequency.YEARLY, interval = interval)
+        Frequency.YEARLY -> RRuleModel(
+            frequency = Frequency.YEARLY,
+            interval = interval,
+            // Pass through loaded Google birthday parts; a plain FREQ=YEARLY
+            // relies on DTSTART and must not invent BYMONTH / BYMONTHDAY.
+            byMonth = byMonth.filter { it in 1..12 },
+            byMonthDay = byMonthDayYearly.filter { it in -31..-1 || it in 1..31 },
+        )
     }
     return base.copy(
+        weekStart = weekStart,
+        bySetPos = if (monthly || yearly) bySetPos else emptyList(),
         end = when (endKind) {
             EndKind.Never -> EndCondition.Never
 
@@ -257,6 +272,14 @@ private fun CustomRulePane(
         count = count,
         anchorDate = anchorDate,
         allDay = allDay,
+        weekStart = initial?.weekStart,
+        byMonth = if (frequency == Frequency.YEARLY) initial?.byMonth.orEmpty() else emptyList(),
+        byMonthDayYearly = if (frequency == Frequency.YEARLY) {
+            initial?.byMonthDay.orEmpty()
+        } else {
+            emptyList()
+        },
+        bySetPos = initial?.bySetPos.orEmpty(),
     )
 
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -285,8 +308,8 @@ private fun CustomRulePane(
                 PaneLabel("on days")
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Weekday.entries.forEach { day ->
-                        Chip(day.name.lowercase(), day in byDay) { selected ->
-                            byDay = if (selected && byDay.size > 1) byDay - day else byDay + day
+                        Chip(day.name.lowercase(), day in byDay) { wantOn ->
+                            byDay = toggleWeeklyDay(byDay, day, wantOn)
                         }
                     }
                 }
@@ -391,6 +414,20 @@ private fun CustomRulePane(
 private fun preview(rule: RRuleModel): String = buildString {
     append(repeatLabel(rule, unreadable = false))
 }
+
+/**
+ * At least one weekday must stay selected. [wantOn] is the chip's new state
+ * after the click — the previous handler inverted that and could never
+ * deselect a day.
+ */
+internal fun toggleWeeklyDay(
+    current: Set<Weekday>,
+    day: Weekday,
+    wantOn: Boolean,
+): Set<Weekday> =
+    if (wantOn) current + day
+    else if (current.size > 1) current - day
+    else current
 
 @Composable
 private fun PaneLabel(text: String) {
