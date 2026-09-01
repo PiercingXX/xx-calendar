@@ -772,7 +772,11 @@ private data class PendingIcsImport(
 private val PendingIcsImportSaver = Saver<PendingIcsImport?, List<Any?>>(
     save = { value ->
         if (value == null) {
-            emptyList()
+            // Null sentinel: an empty saved list round-trips to null in
+            // restore (see `if (saved.isEmpty()) null`). This is not a stub —
+            // the real payload branch below is what production saves whenever
+            // an import is pending.
+            listOf<Any?>()
         } else {
             buildList {
                 add(value.duplicates)
