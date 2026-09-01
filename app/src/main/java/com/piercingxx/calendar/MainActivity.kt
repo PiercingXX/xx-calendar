@@ -57,6 +57,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -425,7 +426,12 @@ private fun AppShell(
     // reader / codec / target-picker pipeline as Settings' SAF import (§9),
     // instead of being discarded with a "pick the file from there" detour.
     var icsBusy by remember { mutableStateOf(false) }
-    var pendingIcsImport by remember { mutableStateOf<PendingIcsImport?>(null) }
+    // The parsed .ics waiting on a target-calendar choice survives rotation:
+    // the picker sheet must not vanish mid-import when the device turns.
+    var pendingIcsImport by
+        rememberSaveable(stateSaver = PendingIcsImportSaver) {
+            mutableStateOf<PendingIcsImport?>(null)
+        }
 
     fun reportIcsFailure(t: Throwable) {
         Toast.makeText(context, "✗ ${t.message ?: "operation failed"}", Toast.LENGTH_LONG).show()
@@ -754,6 +760,88 @@ private data class PendingIcsImport(
     val writableCalendars: List<CalendarSummary>,
     val duplicates: Int,
     val canceled: Int,
+)
+
+/**
+ * The import state is not Bundle-savable as-is, so it rides across rotation
+ * through a flat [Saver] that flattens both nested lists into a Bundle-safe
+ * [List] of primitives/nullables. Order is fixed and mirrored between save
+ * and restore: duplicates, canceled, calendar count + calendar fields, then
+ * draft count + draft fields (each draft's reminder list length-prefixed).
+ */
+private val PendingIcsImportSaver = Saver<PendingIcsImport?, List<Any?>>(
+    save = { value ->
+        if (value == null) {
+            // Null sentinel: an empty saved list round-trips to null in
+            // restore (see `if (saved.isEmpty()) null`). This is not a stub —
+            // the real payload branch below is what production saves whenever
+            // an import is pending.
+            listOf<Any?>()
+        } else {
+            buildList {
+                add(value.duplicates)
+                add(value.canceled)
+                add(value.writableCalendars.size)
+                value.writableCalendars.forEach {
+                    add(it.id); add(it.accountName); add(it.accountType)
+                    add(it.displayName); add(it.color); add(it.isVisible); add(it.isWritable)
+                }
+                add(value.drafts.size)
+                value.drafts.forEach {
+                    add(it.uid); add(it.title); add(it.location); add(it.description)
+                    add(it.startMillis); add(it.endMillis); add(it.allDay)
+                    add(it.eventTimezone); add(it.eventEndTimezone); add(it.duration)
+                    add(it.rrule); add(it.rdate); add(it.exdate)
+                    add(it.availability); add(it.status)
+                    add(it.reminderMinutes.size)
+                    it.reminderMinutes.forEach(::add)
+                }
+            }
+        }
+    },
+    restore = { saved ->
+        if (saved.isEmpty()) {
+            null
+        } else {
+            val iter = saved.iterator()
+            val duplicates = iter.next() as Int
+            val canceled = iter.next() as Int
+            val calendarCount = iter.next() as Int
+            val writableCalendars = List(calendarCount) {
+                CalendarSummary(
+                    id = iter.next() as Long,
+                    accountName = iter.next() as String?,
+                    accountType = iter.next() as String?,
+                    displayName = iter.next() as String,
+                    color = iter.next() as Int,
+                    isVisible = iter.next() as Boolean,
+                    isWritable = iter.next() as Boolean,
+                )
+            }
+            val draftCount = iter.next() as Int
+            val drafts = List(draftCount) {
+                IcsCodec.IcsEventDraft(
+                    uid = iter.next() as String,
+                    title = iter.next() as String?,
+                    location = iter.next() as String?,
+                    description = iter.next() as String?,
+                    startMillis = iter.next() as Long,
+                    endMillis = iter.next() as Long?,
+                    allDay = iter.next() as Boolean,
+                    eventTimezone = iter.next() as String?,
+                    eventEndTimezone = iter.next() as String?,
+                    duration = iter.next() as String?,
+                    rrule = iter.next() as String?,
+                    rdate = iter.next() as String?,
+                    exdate = iter.next() as String?,
+                    availability = iter.next() as Int,
+                    status = iter.next() as Int?,
+                    reminderMinutes = List(iter.next() as Int) { iter.next() as Int },
+                )
+            }
+            PendingIcsImport(drafts, writableCalendars, duplicates, canceled)
+        }
+    },
 )
 
 /**
