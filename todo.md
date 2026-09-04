@@ -97,7 +97,7 @@ Do not enable R8/minify until this is green.
 
 | Item | State |
 |---|---|
-| Search icon | Inert, deferred |
+| Search icon | **In-scope** — see Search below |
 | `dimPast` / `dailyAgenda` / in-app font-bg pickers | Keys persist, rows hidden |
 | ICS S3 | Process death mid-import can leave partial rows with no toast |
 | Split series | Non-atomic by design; UI must keep offering recovery |
@@ -111,9 +111,23 @@ Do not enable R8/minify until this is green.
 
 ---
 
+## Search
+
+The chrome search icon is inert. Wire it.
+
+- [ ] Search events by title / location / description over
+  `CalendarContract` (or the existing repository query).
+- [ ] Tap a hit **jumps to that occurrence** (the instance begin, not
+  the series start) in day or detail — same identity the peek already uses.
+- [ ] Empty / no-permission states are honest.
+- **Accept:** find a recurring meeting next Tuesday; tap lands on
+  Tuesday, not the first instance in 2019.
+
+---
+
 ## Post-v1 (do not block)
 
-Search, year view, `.ics` URL subscribe, NL quick-add, secondary TZ, QS tile,
+Year view, `.ics` URL subscribe, NL quick-add, secondary TZ, QS tile,
 next-event widget, wire hidden `dimPast` / `dailyAgenda`.
 
 ---
