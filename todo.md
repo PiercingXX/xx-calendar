@@ -46,6 +46,28 @@ plus the new month/schedule tests.
 
 ---
 
+## One door / hub (estate — 2026-09-04)
+
+Locked with `skippy-tel-network/todo.md` WS0 D3. **Do not re-litigate
+`INTERNET`.** DAVx⁵ is the network process. This APK stays a
+`CalendarContract` client.
+
+- [ ] When xx-drive hub is up: DAVx⁵ is pointed at hub CalDAV on
+      `127.0.0.1` (estate session). Document the account URL for the
+      operator. APK does not grow `INTERNET`.
+  - verify: `aapt2 dump permissions` / existing R3 gate still refuses
+    `INTERNET`; README/setup names `127.0.0.1` hub CalDAV
+- [ ] When hub is down / drive not installed: DAVx⁵ uses the
+      user-chosen CalDAV origin (estate tel hostname, Synology, or any
+      server). Calendar still has no network.
+  - verify: docs say so; no mill item adds a built-in HTTP client
+- [ ] Do not ship `:845x` / `:8447`/`:8448`/`:8449` as the CalDAV UX.
+
+**Stop:** `INTERNET` in the APK; claiming piggyback while DAVx⁵ still
+needs a second WAN host when the hub is up.
+
+---
+
 ## Ship gate — 17.2
 
 `./gradlew connectedDebugAndroidTest` on a Pixel with DAVx⁵ + a Google
