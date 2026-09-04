@@ -65,6 +65,24 @@ class GridModelTest {
     }
 
     @Test
+    fun `slotFromTapMinute is a default-length slot at the snapped minute`() {
+        assertEquals(0 to 30, slotFromTapMinute(0f))
+        assertEquals(15 to 45, slotFromTapMinute(8f))
+        assertEquals(9 * 60 to 9 * 60 + 30, slotFromTapMinute(9 * 60 + 7f))
+        // A tap at 23:59 still fits inside the day: 23:30–24:00.
+        assertEquals(1410 to 1440, slotFromTapMinute(1439f))
+    }
+
+    @Test
+    fun `timedSlotOnDate is nine o'clock local for thirty minutes`() {
+        val zone = ZoneId.of("America/New_York")
+        val date = LocalDate.of(2026, 8, 24)
+        val (start, end) = timedSlotOnDate(date, zone)
+        assertEquals(TimeMath.localDayStart(date, zone) + 9 * 3_600_000L, start)
+        assertEquals(start + 30 * 60_000L, end)
+    }
+
+    @Test
     fun `coerceSlot clamps and enforces minimum length`() {
         assertEquals(30 to 45, coerceSlot(30, 30))
         assertEquals(1425 to 1440, coerceSlot(1500, 1440))

@@ -158,20 +158,19 @@ fun ScheduleScreen(
     }
 
     val listState = rememberLazyListState()
-    var focusDate by remember { mutableStateOf<LocalDate?>(null) }
 
     fun shiftFocus(days: Long) {
-        val next = (focusDate ?: LocalDate.now()).plusDays(days)
-        focusDate = next
-        if (next.isBefore(state.startDate) || next.isAfter(state.endDate)) {
-            state.jumpTo(next)
-        }
+        state.focusOn((state.focusDate ?: LocalDate.now()).plusDays(days))
     }
 
-    LaunchedEffect(focusDate, sections) {
-        val target = focusDate ?: return@LaunchedEffect
+    LaunchedEffect(state.focusDate, sections) {
+        val target = state.focusDate ?: return@LaunchedEffect
         val idx = sections.indexOfFirst { !it.date.isBefore(target) }
-        if (idx >= 0) listState.animateScrollToItem(idx)
+        when {
+            idx >= 0 -> listState.animateScrollToItem(idx)
+            sections.isNotEmpty() && target.isAfter(sections.last().date) ->
+                listState.animateScrollToItem(sections.lastIndex)
+        }
     }
 
     // Infinite scroll both directions: near either edge of the loaded data,

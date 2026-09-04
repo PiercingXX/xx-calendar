@@ -25,6 +25,11 @@ class NavigationRoutesTest {
     }
 
     @Test
+    fun `newEventRoute pins both ends`() {
+        assertEquals("editor/new?start=100&end=200", newEventRoute(100L, 200L))
+    }
+
+    @Test
     fun `editorRoute defaults to a plain edit`() {
         assertEquals("editor/7?duplicate=", editorRoute(7L, null))
     }

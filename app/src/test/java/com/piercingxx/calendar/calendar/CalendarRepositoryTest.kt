@@ -1,5 +1,6 @@
 package com.piercingxx.calendar.calendar
 
+import android.content.ContentValues
 import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Reminders
@@ -9,6 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -23,6 +25,80 @@ class CalendarRepositoryTest : FakeProviderFixture() {
     private fun repo() = CalendarRepository(resolver)
 
     // -------------------------------------------------------- round-trip
+
+    @Test
+    fun `new event insert omits null original-linkage columns`() = runTest {
+        fake.seedCalendar()
+        val id = repo().saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                startMillis = utc(2026, 8, 24, 9, 0),
+                endMillis = utc(2026, 8, 24, 9, 15),
+                eventTimezone = "UTC",
+                title = "standup",
+            ),
+        )
+        val row = fake.events.getValue(id)
+        // Presence of a null ORIGINAL_ID is what CalendarProvider2 unboxes on
+        // insert (see FakeCalendarProvider.requireOriginalIdUnboxable).
+        assertFalse(row.containsKey(Events.ORIGINAL_ID))
+        assertFalse(row.containsKey(Events.ORIGINAL_INSTANCE_TIME))
+        assertFalse(row.containsKey(Events.ORIGINAL_ALL_DAY))
+    }
+
+    @Test
+    fun `insert with null ORIGINAL_ID NPEs the way CalendarProvider2 does`() {
+        fake.seedCalendar()
+        val values = ContentValues().apply {
+            put(Events.CALENDAR_ID, 1L)
+            put(Events.DTSTART, utc(2026, 8, 24, 9, 0))
+            put(Events.DTEND, utc(2026, 8, 24, 9, 15))
+            put(Events.EVENT_TIMEZONE, "UTC")
+            put(Events.TITLE, "standup")
+            putNull(Events.ORIGINAL_ID)
+        }
+        try {
+            resolver.insert(Events.CONTENT_URI, values)
+            fail("expected NPE from unboxing a null ORIGINAL_ID")
+        } catch (e: NullPointerException) {
+            assertTrue(e.message!!.contains("longValue"))
+        }
+    }
+
+    @Test
+    fun `exception insert writes original linkage`() = runTest {
+        fake.seedCalendar()
+        val repo = repo()
+        val parentStart = utc(2026, 8, 24, 9, 0)
+        val parent = repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                startMillis = parentStart,
+                endMillis = parentStart + 1_800_000L,
+                eventTimezone = "UTC",
+                title = "standup",
+                duration = "PT30M",
+                rrule = "FREQ=DAILY",
+            ),
+        )
+        val instance = parentStart + DAY_MILLIS
+        val id = repo.saveEvent(
+            EventDraft(
+                calendarId = 1L,
+                startMillis = instance,
+                endMillis = instance + 1_800_000L,
+                eventTimezone = "UTC",
+                title = "standup moved once",
+                originalId = parent,
+                originalInstanceTime = instance,
+                originalAllDay = false,
+            ),
+        )
+        val row = fake.events.getValue(id)
+        assertEquals(parent, row[Events.ORIGINAL_ID])
+        assertEquals(instance, row[Events.ORIGINAL_INSTANCE_TIME])
+        assertEquals(0L, row[Events.ORIGINAL_ALL_DAY])
+    }
 
     @Test
     fun `insert then load returns every modeled field`() = runTest {

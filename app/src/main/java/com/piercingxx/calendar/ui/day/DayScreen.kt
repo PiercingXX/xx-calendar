@@ -31,6 +31,7 @@ import com.piercingxx.calendar.core.TimeMath
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.detailRoute
 import com.piercingxx.calendar.editorRoute
+import com.piercingxx.calendar.newEventRoute
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
 import com.piercingxx.calendar.ui.gesture.horizontalSwipeNavigate
@@ -46,8 +47,8 @@ import kotlinx.coroutines.launch
  * Day view (design §8.3): one time-grid column for the visible day, all-day
  * events pinned above, in-screen window navigation. The screen owns its
  * visible date and its write path; [onNavigate] receives the app's routes
- * ("editor/new?start=..&end=.." after a create gesture, "detail/{id}?start="
- * on tap — 14.1 occurrence identity).
+ * ("editor/new?start=..&end=.." after a tap or create-drag on empty grid,
+ * "detail/{id}?start=" on an event tap — 14.1 occurrence identity).
  */
 @Composable
 fun DayScreen(
@@ -162,7 +163,7 @@ fun DayScreen(
             nowMillis = nowMillis,
             zone = zone,
             onCreateSlot = { _, startMillis, endMillis ->
-                onNavigate("editor/new?start=$startMillis&end=$endMillis")
+                onNavigate(newEventRoute(startMillis, endMillis))
             },
             onEventMoved = { eventId, draggedInstanceStart, startMillis, endMillis ->
                 scope.launch {

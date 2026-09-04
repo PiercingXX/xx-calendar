@@ -56,6 +56,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -94,6 +95,7 @@ import com.piercingxx.calendar.settings.IcsExchange
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.ui.day.DayScreen
+import com.piercingxx.calendar.ui.day.DayWindowState
 import com.piercingxx.calendar.ui.detail.DetailSheet
 import com.piercingxx.calendar.ui.editor.EditorScreen
 import com.piercingxx.calendar.ui.month.MonthScreen
@@ -111,6 +113,7 @@ import com.piercingxx.calendar.ui.theme.CalendarTheme
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import com.piercingxx.calendar.ui.theme.ThemeGroundState
 import com.piercingxx.calendar.ui.week.WeekScreen
+import com.piercingxx.calendar.ui.week.WeekWindowState
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -238,6 +241,9 @@ private const val ROUTE_MONTH = "month"
  */
 internal fun detailRoute(eventId: Long, instanceStartMillis: Long?): String =
     if (instanceStartMillis == null) "detail/$eventId" else "detail/$eventId?start=$instanceStartMillis"
+
+internal fun newEventRoute(startMillis: Long, endMillis: Long): String =
+    "editor/new?start=$startMillis&end=$endMillis"
 
 internal fun editorRoute(
     eventId: Long,
@@ -416,9 +422,27 @@ private fun AppShell(
     val colors = LocalCalendarColors.current
     val scope = rememberCoroutineScope()
 
-    // The schedule window lives at chrome level so the top bar (Today, the
-    // mini-month picker) and the list act on one shared state.
+    // Window state lives at chrome level so the top bar (Today, the mini-month
+    // picker) can jump every view, not just Schedule. Day/Week already had
+    // hoistable holders; Month is pager-driven and takes a generation-stamped
+    // jump so a second pick of the same date still re-scrolls.
     val scheduleWindow = remember { ScheduleWindowState() }
+    val dayWindow = remember { DayWindowState() }
+    val firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name)
+    val weekWindow = remember(firstDayOfWeek) { WeekWindowState(firstDayOfWeek) }
+    var monthJumpDate by remember { mutableStateOf<LocalDate?>(null) }
+    var monthJumpGeneration by remember { mutableIntStateOf(0) }
+    var monthViewMonth by remember { mutableStateOf(YearMonth.now()) }
+
+    fun jumpToDate(date: LocalDate) {
+        scheduleWindow.jumpTo(date)
+        dayWindow.jumpTo(date)
+        weekWindow.jumpTo(date)
+        monthJumpDate = date
+        monthJumpGeneration++
+        monthViewMonth = YearMonth.from(date)
+    }
+
     val repository = remember { CalendarRepository(context.contentResolver) }
 
     // -------------------------------------------------- 15.7 .ics VIEW import
@@ -547,7 +571,7 @@ private fun AppShell(
         if (!calendarReady) return@LaunchedEffect
         when (val link = pending.value ?: return@LaunchedEffect) {
             is DeepLink.Time -> {
-                scheduleWindow.jumpTo(
+                jumpToDate(
                     Instant.ofEpochMilli(link.epochMillis)
                         .atZone(ZoneId.systemDefault())
                         .toLocalDate(),
@@ -585,7 +609,31 @@ private fun AppShell(
     Scaffold(
         modifier = modifier,
         containerColor = colors.ink,
-        topBar = { CalendarTopBar(navController, scheduleWindow, settings, settingsStore) },
+        topBar = {
+            val currentRoute =
+                navController.currentBackStackEntryAsState().value?.destination?.route
+            val today = LocalDate.now()
+            CalendarTopBar(
+                navController = navController,
+                settings = settings,
+                settingsStore = settingsStore,
+                pickerMonth = when (currentRoute) {
+                    ROUTE_DAY -> YearMonth.from(dayWindow.date)
+                    ROUTE_WEEK -> YearMonth.from(weekWindow.startDate)
+                    ROUTE_MONTH -> monthViewMonth
+                    else -> scheduleWindow.pickerMonth()
+                },
+                showToday = when (currentRoute) {
+                    ROUTE_DAY -> !dayWindow.onToday()
+                    ROUTE_WEEK -> !weekWindow.onToday()
+                    ROUTE_MONTH -> monthViewMonth != YearMonth.from(today)
+                    ROUTE_SCHEDULE ->
+                        scheduleWindow.focusDate != null && scheduleWindow.focusDate != today
+                    else -> false
+                },
+                onJumpToDate = ::jumpToDate,
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { navController.navigate("editor/null-placeholder") },
@@ -624,6 +672,7 @@ private fun AppShell(
                 composable(ROUTE_DAY) {
                     DayScreen(
                         Modifier.fillMaxSize(),
+                        state = dayWindow,
                         onNavigate = { navController.navigate(it) },
                     )
                 }
@@ -631,7 +680,8 @@ private fun AppShell(
                     WeekScreen(
                         Modifier.fillMaxSize(),
                         // §8.6 start day of week (15.6), same as MonthScreen.
-                        firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
+                        firstDayOfWeek = firstDayOfWeek,
+                        state = weekWindow,
                         onNavigate = { navController.navigate(it) },
                     )
                 }
@@ -639,12 +689,18 @@ private fun AppShell(
                     MonthScreen(
                         Modifier.fillMaxSize(),
                         showWeekNumbers = settings.weekNumbers,
-                        firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
+                        firstDayOfWeek = firstDayOfWeek,
                         // Peek taps open the detail sheet (15.1), carrying the
                         // tapped occurrence's begin (14.1).
                         onEventClick = { id, start ->
                             navController.navigate(detailRoute(id, start))
                         },
+                        onCreate = { start, end ->
+                            navController.navigate(newEventRoute(start, end))
+                        },
+                        jumpToDate = monthJumpDate,
+                        jumpGeneration = monthJumpGeneration,
+                        onVisibleMonthChange = { monthViewMonth = it },
                     )
                 }
                 // WS7: the real detail sheet. Ids arrive as strings and are
@@ -862,9 +918,11 @@ internal val VIEWS = listOf(
 @Composable
 private fun CalendarTopBar(
     navController: NavController,
-    scheduleWindow: ScheduleWindowState,
     settings: AppSettings,
     settingsStore: SettingsStore,
+    pickerMonth: YearMonth,
+    showToday: Boolean,
+    onJumpToDate: (LocalDate) -> Unit,
 ) {
     val colors = LocalCalendarColors.current
     val context = LocalContext.current
@@ -876,16 +934,16 @@ private fun CalendarTopBar(
     TopAppBar(
         title = {
             Text(
-                currentMonthYear(),
+                monthYearLabel(pickerMonth),
                 style = MonthHeader,
                 color = colors.text,
                 modifier = Modifier.clickable { pickerOpen = true },
             )
         },
         actions = {
-            if (!scheduleWindow.onCurrentMonth()) {
+            if (showToday) {
                 TextButton(
-                    onClick = { scheduleWindow.jumpTo(LocalDate.now()) },
+                    onClick = { onJumpToDate(LocalDate.now()) },
                 ) {
                     Text("Today", style = Body, color = colors.text)
                 }
@@ -951,10 +1009,10 @@ private fun CalendarTopBar(
 
     if (pickerOpen) {
         MiniMonthPickerSheet(
-            initialMonth = scheduleWindow.pickerMonth(),
+            initialMonth = pickerMonth,
             firstDayOfWeek = DayOfWeek.valueOf(settings.startDayOfWeek.name),
             onPick = { date ->
-                scheduleWindow.jumpTo(date)
+                onJumpToDate(date)
                 pickerOpen = false
             },
             onDismiss = { pickerOpen = false },
@@ -964,8 +1022,8 @@ private fun CalendarTopBar(
 
 /**
  * The mini-month picker (§8.1): one month grid with prev/next chevrons;
- * picking a day jumps the schedule window. Lean by design. First column
- * follows §8.6's start-day-of-week, like the month view.
+ * picking a day jumps whichever view is showing to that date. Lean by
+ * design. First column follows §8.6's start-day-of-week, like the month view.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1009,7 +1067,11 @@ private fun MiniMonthPickerSheet(
             val today = LocalDate.now()
             items(cells) { date ->
                 Box(
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier
+                        .size(44.dp)
+                        .then(
+                            if (date != null) Modifier.clickable { onPick(date) } else Modifier,
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     if (date != null) {
@@ -1020,8 +1082,7 @@ private fun MiniMonthPickerSheet(
                             modifier = Modifier
                                 .size(38.dp)
                                 .clip(CircleShape)
-                                .background(if (isToday) colors.emphasisBg else Color.Transparent)
-                                .clickable { onPick(date) },
+                                .background(if (isToday) colors.emphasisBg else Color.Transparent),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -1047,10 +1108,10 @@ private fun switchView(navController: NavController, route: String) {
     }
 }
 
-private fun currentMonthYear(): String {
-    val date = LocalDate.now()
-    val month = date.month.getDisplayName(JavaTextStyle.FULL, Locale.getDefault())
-    return "$month ${date.year}".uppercase(Locale.getDefault())
+/** `AUGUST 2026` — chrome title for the month currently on screen. */
+internal fun monthYearLabel(month: YearMonth, locale: Locale = Locale.getDefault()): String {
+    val name = month.month.getDisplayName(JavaTextStyle.FULL, locale)
+    return "$name ${month.year}".uppercase(locale)
 }
 
 private fun hasCalendarAccess(context: Context): Boolean =

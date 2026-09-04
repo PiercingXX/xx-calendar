@@ -4,8 +4,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -42,6 +46,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +73,7 @@ import java.time.ZoneId
 import java.time.format.TextStyle as JavaTextStyle
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 
 /** §8.3 geometry: 56dp per hour, a 52dp label gutter, everything else derived. */
 internal val HOUR_HEIGHT = 56.dp
@@ -160,10 +167,11 @@ private fun placeColumn(
  * The Day/Week time grid (design §8.3): 24 hour rules at `line`, Space Mono
  * labels in the gutter, vertical scroll, and — when today is on screen — the
  * signal-white now rule with its filled dot, the only full-white element.
- * Gestures: long-press + drag on empty grid creates; long-press + drag moves
- * an event; dragging a top/bottom edge resizes. Everything snaps to 15
- * minutes; finished gestures report absolute epoch millis to the screen,
- * which owns navigation and persistence.
+ * Gestures: tap empty grid opens a default-length slot at that time;
+ * long-press + drag sizes a new slot; long-press + drag moves an event;
+ * dragging a top/bottom edge resizes. Everything snaps to 15 minutes;
+ * finished gestures report absolute epoch millis to the screen, which
+ * owns navigation and persistence.
  */
 @Composable
 fun TimeGrid(
@@ -317,29 +325,11 @@ private fun DayColumn(
             Modifier
                 .fillMaxSize()
                 .pointerInput(pxPerMinute, column.date) {
-                    var anchor = 0
-                    var start = 0
-                    var end = DEFAULT_SLOT_MINUTES
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { position ->
-                            anchor = snapMinute(position.y / pxPerMinute).coerceIn(0, DAY_MINUTES - SNAP_MINUTES)
-                            start = anchor
-                            end = anchor + DEFAULT_SLOT_MINUTES
-                            onPreview(GesturePreview.Create(column.date, start, end))
-                        },
-                        onDrag = { change, _ ->
-                            change.consume()
-                            val finger = snapMinute(change.position.y / pxPerMinute).coerceIn(0, DAY_MINUTES)
-                            val coerced = coerceSlot(minOf(anchor, finger), maxOf(anchor + SNAP_MINUTES, finger))
-                            start = coerced.first
-                            end = coerced.second
-                            onPreview(GesturePreview.Create(column.date, start, end))
-                        },
-                        onDragEnd = {
-                            onPreview(null)
-                            onCreateSlot(start, end)
-                        },
-                        onDragCancel = { onPreview(null) },
+                    detectEmptyGridCreate(
+                        pxPerMinute = pxPerMinute,
+                        date = column.date,
+                        onPreview = onPreview,
+                        onCreateSlot = onCreateSlot,
                     )
                 },
         ) {
@@ -379,6 +369,65 @@ private fun DayColumn(
                     ((ghost.endMinute - ghost.startMinute) * pxPerMinute).coerceAtLeast(minBlockPx).toDp()
                 },
             )
+        }
+    }
+}
+
+/**
+ * Empty-grid create: a short tap opens a default-length slot at the snapped
+ * minute; a long-press-drag sizes the slot. Movement past touch slop before
+ * the long-press timeout is left for the parent vertical scroll.
+ */
+private suspend fun PointerInputScope.detectEmptyGridCreate(
+    pxPerMinute: Float,
+    date: LocalDate,
+    onPreview: (GesturePreview?) -> Unit,
+    onCreateSlot: (Int, Int) -> Unit,
+) {
+    awaitEachGesture {
+        try {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val longPress = awaitLongPressOrCancellation(down.id)
+            if (longPress != null) {
+                var anchor = snapMinute(longPress.position.y / pxPerMinute)
+                    .coerceIn(0, DAY_MINUTES - SNAP_MINUTES)
+                var start = anchor
+                var end = anchor + DEFAULT_SLOT_MINUTES
+                onPreview(GesturePreview.Create(date, start, end))
+                val finished = drag(longPress.id) { change ->
+                    change.consume()
+                    val finger = snapMinute(change.position.y / pxPerMinute).coerceIn(0, DAY_MINUTES)
+                    val coerced = coerceSlot(
+                        minOf(anchor, finger),
+                        maxOf(anchor + SNAP_MINUTES, finger),
+                    )
+                    start = coerced.first
+                    end = coerced.second
+                    onPreview(GesturePreview.Create(date, start, end))
+                }
+                onPreview(null)
+                if (finished) {
+                    currentEvent.changes.forEach { if (it.changedToUp()) it.consume() }
+                    onCreateSlot(start, end)
+                }
+            } else {
+                // Long-press cancelled: a tap (pointer up, inside slop) opens
+                // a slot; movement past slop is the parent scroll and is left
+                // alone. `!pressed` rather than changedToUp() — the cancel
+                // path may already have consumed the up.
+                val up = currentEvent.changes.firstOrNull { it.id == down.id }
+                if (up != null && !up.pressed) {
+                    val slop = viewConfiguration.touchSlop
+                    if ((up.position - down.position).getDistance() < slop) {
+                        up.consume()
+                        val slot = slotFromTapMinute(down.position.y / pxPerMinute)
+                        onCreateSlot(slot.first, slot.second)
+                    }
+                }
+            }
+        } catch (c: CancellationException) {
+            onPreview(null)
+            throw c
         }
     }
 }

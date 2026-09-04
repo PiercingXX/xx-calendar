@@ -45,6 +45,7 @@ import com.piercingxx.calendar.core.TimeMath
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
+import com.piercingxx.calendar.ui.day.timedSlotOnDate
 import com.piercingxx.calendar.ui.theme.LocalCalendarColors
 import com.piercingxx.calendar.ui.theme.MonthHeader
 import java.time.DayOfWeek
@@ -72,6 +73,13 @@ import kotlinx.coroutines.launch
  * [onEventClick] routes peek taps to the detail sheet, carrying the tapped
  * occurrence's BEGIN so recurring rows open on the instance actually tapped
  * (15.1 + 14.1); DayPeek forwards it straight from the tapped row.
+ * [onCreate] opens a new event on a date-only tap: a second tap on the
+ * already-selected day, or a tap on an empty peek.
+ * [jumpToDate] / [jumpGeneration] are the chrome mini-month picker's jump:
+ * generation ticks on every pick so the same date still re-scrolls after
+ * the user has paged away.
+ * [onVisibleMonthChange] reports the pager's shown month so the chrome
+ * title tracks a swipe, not only a picker jump.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -80,6 +88,10 @@ fun MonthScreen(
     showWeekNumbers: Boolean = false,
     firstDayOfWeek: DayOfWeek = DayOfWeek.MONDAY,
     onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit = { _, _ -> },
+    onCreate: (startMillis: Long, endMillis: Long) -> Unit = { _, _ -> },
+    jumpToDate: LocalDate? = null,
+    jumpGeneration: Int = 0,
+    onVisibleMonthChange: (YearMonth) -> Unit = {},
 ) {
     val colors = LocalCalendarColors.current
     val context = LocalContext.current
@@ -129,6 +141,15 @@ fun MonthScreen(
 
     var selectedDay by remember { mutableStateOf<LocalDate?>(null) }
 
+    // Chrome mini-month picker / Today: generation ticks on every pick so a
+    // second tap of the same date still re-scrolls after the user paged away.
+    LaunchedEffect(jumpGeneration, jumpToDate) {
+        val date = jumpToDate ?: return@LaunchedEffect
+        if (jumpGeneration == 0) return@LaunchedEffect
+        pagerState.scrollToPage(monthPagerPage(date, baseMonth))
+        selectedDay = date
+    }
+
     // Per-month caches; the effect loads the shown month plus both neighbours
     // so a swipe finds its chips already waiting.
     var monthCache by remember { mutableStateOf(emptyMap<YearMonth, MonthEvents>()) }
@@ -141,6 +162,9 @@ fun MonthScreen(
     )
     var cacheFilters by remember { mutableStateOf(currentFilters) }
     val shownMonth = baseMonth.plusMonths((pagerState.currentPage - START_PAGE).toLong())
+    LaunchedEffect(shownMonth) {
+        onVisibleMonthChange(shownMonth)
+    }
 
     LaunchedEffect(
         shownMonth,
@@ -199,7 +223,14 @@ fun MonthScreen(
                 today = today,
                 selected = peekSelected,
                 tiersByCalendarId = tiersByCalendarId,
-                onSelect = { date -> selectedDay = date },
+                onSelect = { date ->
+                    if (peekSelected == date) {
+                        val slot = timedSlotOnDate(date, zone)
+                        onCreate(slot.first, slot.second)
+                    } else {
+                        selectedDay = date
+                    }
+                },
                 weeks = buildWeeks(pageMonth, pageData?.eventsByDate.orEmpty(), firstDayOfWeek),
                 modifier = Modifier.fillMaxSize(),
             )
@@ -216,6 +247,10 @@ fun MonthScreen(
                 // The peek row carries the tapped occurrence's BEGIN itself
                 // (14.1); null only if the cache moved mid-tap.
                 onEventClick = onEventClick,
+                onCreate = {
+                    val slot = timedSlotOnDate(peekSelected, zone)
+                    onCreate(slot.first, slot.second)
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(2f, fill = false),
@@ -227,8 +262,8 @@ fun MonthScreen(
 }
 
 /**
- * Chevron row with the shown month/year — orientation while paging, since the
- * chrome top bar shows today's real-world month regardless of this view.
+ * Chevron row with the shown month/year — in-view paging control. The chrome
+ * title tracks the same month via [onVisibleMonthChange].
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -344,3 +379,11 @@ private const val START_PAGE = 1200
 private const val PAGE_COUNT = 2401
 private const val WINDOW_MARGIN_DAYS = 7L
 private const val CACHE_RADIUS = 2L
+
+/** Pager index for [date] relative to a month grid whose page 0 is [baseMonth]. */
+internal fun monthPagerPage(
+    date: LocalDate,
+    baseMonth: YearMonth,
+    pageCount: Int = PAGE_COUNT,
+): Int = ChronoUnit.MONTHS.between(baseMonth, YearMonth.from(date)).toInt()
+    .coerceIn(0, pageCount - 1)

@@ -40,7 +40,9 @@ import java.time.format.DateTimeFormatter
  * DIRTY, MUTATORS, DELETED, ORIGINAL_SYNC_ID, LAST_SYNCED) from a
  * normal client (`verifyNoSyncColumns`) and refuse rows carrying both DTEND
  * and DURATION — updates after merging the patch onto the stored row, exactly where the real
- * provider validates (`handleUpdateEvents` → `validateEventData`). The
+ * provider validates (`handleUpdateEvents` → `validateEventData`). Inserts
+ * also unbox ORIGINAL_ID when the key is present without ORIGINAL_SYNC_ID —
+ * a stored null NPEs the same way CalendarProvider2 does. The
  * `exception/{eventId}` insert (CONTENT_EXCEPTION_URI shape) clones the
  * original row into an exception row, applying the caller's overrides — the
  * mechanism RecurrenceEditor uses for delete-this-instance.
@@ -217,6 +219,7 @@ class FakeCalendarProvider : ContentProvider() {
 
             "events" -> {
                 requireNoSyncColumnWrites(uri, values)
+                requireOriginalIdUnboxable(values)
                 val row = normalize(values)
                 requireValidEventExtent(row, "insert")
                 val id = ++eventSeq
@@ -364,6 +367,23 @@ class FakeCalendarProvider : ContentProvider() {
 
     private fun isCallerSyncAdapter(uri: Uri): Boolean =
         uri.getQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER) == "true"
+
+    /**
+     * CalendarProvider2.insertInTransactionInner: when ORIGINAL_SYNC_ID is
+     * absent and ORIGINAL_ID is present, it unboxes getAsLong(ORIGINAL_ID)
+     * into getOriginalSyncId(long). A stored null still occupies the key, so
+     * a new-event insert that put(ORIGINAL_ID, null) dies with
+     * Long.longValue() on a null object — the crash a blank editor save
+     * produced on device. Mirror that here so JVM tests cannot green-pass it.
+     */
+    private fun requireOriginalIdUnboxable(values: ContentValues) {
+        if (!values.containsKey(CalendarContract.Events.ORIGINAL_ID)) return
+        if (values.containsKey(CalendarContract.Events.ORIGINAL_SYNC_ID)) return
+        values.getAsLong(CalendarContract.Events.ORIGINAL_ID)
+            ?: throw NullPointerException(
+                "Attempt to invoke virtual method 'long java.lang.Long.longValue()' on a null object reference",
+            )
+    }
 
     /**
      * CalendarProvider2's `validateEventData` DTEND/DURATION rule, with its

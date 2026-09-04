@@ -30,6 +30,7 @@ import com.piercingxx.calendar.core.SigilTier
 import com.piercingxx.calendar.core.TimeMath
 import com.piercingxx.calendar.detailRoute
 import com.piercingxx.calendar.editorRoute
+import com.piercingxx.calendar.newEventRoute
 import com.piercingxx.calendar.settings.Settings as AppSettings
 import com.piercingxx.calendar.settings.SettingsStore
 import com.piercingxx.calendar.settings.SigilStore
@@ -171,7 +172,7 @@ fun WeekScreen(
             nowMillis = nowMillis,
             zone = zone,
             onCreateSlot = { _, startMillis, endMillis ->
-                onNavigate("editor/new?start=$startMillis&end=$endMillis")
+                onNavigate(newEventRoute(startMillis, endMillis))
             },
             onEventMoved = { eventId, draggedInstanceStart, startMillis, endMillis ->
                 scope.launch {

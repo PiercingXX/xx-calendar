@@ -57,6 +57,7 @@ internal fun DayPeek(
     // 14.1: the row carries the tapped occurrence's BEGIN directly, so the
     // caller needs no first-match lookup in the peeked day's list.
     onEventClick: (eventId: Long, instanceStartMillis: Long?) -> Unit,
+    onCreate: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalCalendarColors.current
@@ -75,7 +76,12 @@ internal fun DayPeek(
                 "Nothing scheduled.",
                 style = Body,
                 color = colors.muted,
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (onCreate != null) Modifier.clickable(onClick = onCreate) else Modifier,
+                    )
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
             )
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {

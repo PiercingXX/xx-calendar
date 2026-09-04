@@ -251,8 +251,14 @@ private fun EventDraft.writeModeledInto(values: ContentValues) {
     values.put(Events.RDATE, rdate)
     values.put(Events.EXDATE, exdate)
     values.put(Events.EVENT_COLOR_KEY, colorKey)
-    values.put(Events.ORIGINAL_ID, originalId)
-    values.put(Events.ORIGINAL_INSTANCE_TIME, originalInstanceTime)
+    // Omit, don't putNull. CalendarProvider2.insertInTransactionInner treats
+    // containsKey(ORIGINAL_ID) as "this is an exception" and unboxes
+    // getAsLong(ORIGINAL_ID) into getOriginalSyncId(long). A stored null still
+    // occupies the key, so a new-event insert that put(ORIGINAL_ID, null) dies
+    // with Long.longValue() on a null object. ORIGINAL_ALL_DAY already
+    // followed this rule; the two Long linkage columns did not.
+    originalId?.let { values.put(Events.ORIGINAL_ID, it) }
+    originalInstanceTime?.let { values.put(Events.ORIGINAL_INSTANCE_TIME, it) }
     if (originalAllDay != null) {
         values.put(Events.ORIGINAL_ALL_DAY, if (originalAllDay) 1 else 0)
     }

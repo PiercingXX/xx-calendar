@@ -36,6 +36,16 @@ class ScheduleWindowState {
     val startDate: LocalDate get() = LocalDate.ofEpochDay(startDay)
     val endDate: LocalDate get() = LocalDate.ofEpochDay(endDay)
 
+    /**
+     * Day the list should scroll to. Null until a jump (picker, Today, deep
+     * link) or a horizontal swipe names one. A pick inside the already-loaded
+     * window still sets this — that is what made the mini-month picker look
+     * like it did nothing: [jumpTo] only resized the query range, and a date
+     * in the current month left the range (and the scroll) unchanged.
+     */
+    var focusDate: LocalDate? by mutableStateOf(null)
+        private set
+
     /** Today counts as "on screen" only when today's month lies inside the window. */
     fun onCurrentMonth(): Boolean {
         val now = YearMonth.now()
@@ -55,11 +65,24 @@ class ScheduleWindowState {
         val month = YearMonth.from(date)
         startDay = month.minusMonths(1).atDay(1).toEpochDay()
         endDay = month.plusMonths(1).atEndOfMonth().toEpochDay()
+        focusDate = date
     }
 
-    /** Month to open the picker on: today if visible, else the window's middle month. */
-    fun pickerMonth(): YearMonth =
-        if (onCurrentMonth()) YearMonth.now() else YearMonth.from(startDate).plusMonths(1)
+    /**
+     * Name [date] as the focused day without necessarily resizing the window.
+     * Swipe navigation uses this so a one-day flick does not rebuild the
+     * three-month query; a date outside the window still [jumpTo]s.
+     */
+    fun focusOn(date: LocalDate) {
+        if (date.isBefore(startDate) || date.isAfter(endDate)) {
+            jumpTo(date)
+        } else {
+            focusDate = date
+        }
+    }
+
+    /** Month to open the picker on: the focused day, else today. */
+    fun pickerMonth(): YearMonth = YearMonth.from(focusDate ?: LocalDate.now())
 
     fun forceRefresh() {
         revision++

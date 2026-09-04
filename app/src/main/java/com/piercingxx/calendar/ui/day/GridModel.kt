@@ -96,6 +96,30 @@ internal fun snapMinute(rawMinute: Float): Int =
     (rawMinute / SNAP_MINUTES).roundToInt() * SNAP_MINUTES
 
 /**
+ * Tap on empty grid → a default-length slot starting at the snapped minute.
+ * Clamped so the whole slot stays inside the day (a tap at 23:50 is 23:30–24:00).
+ */
+internal fun slotFromTapMinute(rawMinute: Float): Pair<Int, Int> {
+    val start = snapMinute(rawMinute).coerceIn(0, DAY_MINUTES - DEFAULT_SLOT_MINUTES)
+    return start to start + DEFAULT_SLOT_MINUTES
+}
+
+/**
+ * Date-only create (month cell / empty peek): 09:00 local, default length.
+ * 09:00 always fits a 30-minute slot; the clamp is for a longer default.
+ */
+internal fun timedSlotOnDate(
+    date: LocalDate,
+    zone: ZoneId,
+    durationMinutes: Int = DEFAULT_SLOT_MINUTES,
+): Pair<Long, Long> {
+    val dayStart = TimeMath.localDayStart(date, zone)
+    val startMinute = (9 * 60).coerceAtMost(DAY_MINUTES - durationMinutes)
+    val start = dayStart + startMinute * 60_000L
+    return start to start + durationMinutes * 60_000L
+}
+
+/**
  * Clamp a freshly created slot: inside the day, at least one snap long, and
  * anchored to its start. Input is expected ordered (create-drag guarantees it).
  */
